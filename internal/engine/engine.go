@@ -1270,6 +1270,7 @@ func (e *Engine) finish(t task.Task, providerID string, rec store.Run, res provi
 
 	finished := e.clock.Now()
 	rec.FinishedAt = &finished
+	rec.PID = 0
 	rec.ExitCode = res.ExitCode
 	rec.Status = res.Status
 	if res.SessionID != "" {
@@ -1558,6 +1559,8 @@ func (e *Engine) ActiveTaskIDs() []string {
 func (e *Engine) Loop(ctx context.Context, interval time.Duration) error {
 	for {
 		if err := e.Tick(ctx); err != nil {
+			// A taken-back run is not this daemon's to wait for (see drain).
+			e.stopAdopts()
 			e.WaitIdle()
 			return err
 		}

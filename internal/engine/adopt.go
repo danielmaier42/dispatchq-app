@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -121,31 +122,46 @@ func (e *Engine) Recover() (adopted []store.Run, interrupted int, err error) {
 		pid   int
 		start string
 	}
+	orphans, err := e.procs.Orphans()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dispatchqd: list orphaned processes: %v\n", err)
+	}
+	orphaned := map[int]bool{}
+	for _, o := range orphans {
+		orphaned[o.PID] = true
+	}
+
 	var take []found
 	keep := map[string]bool{}
+	tasks := map[string]bool{} // one run per task: the task's active slot is a set
 	var gone []string
 	for id, l := range st.LiveRuns {
-		if e.alive(l.PID, l.ProcessStart) {
+		switch {
+		case !e.alive(l.PID, l.ProcessStart):
+			gone = append(gone, id)
+		case !orphaned[l.PID] || tasks[l.Run.TaskID]:
+			// Still owned by the process that started it (a `dispatchq
+			// run-now` that records its own end), so neither taken back nor
+			// written off.
+			keep[id] = true
+		default:
 			rec := l.Run
 			rec.PID = l.PID
 			take = append(take, found{rec, l.PID, l.ProcessStart})
 			keep[id] = true
-		} else {
-			gone = append(gone, id)
+			tasks[rec.TaskID] = true
 		}
 	}
 
-	var orphans []Orphan
-	listed := false
-	for _, r := range runs {
-		if keep[r.RunID] || !legacyCandidate(r, now) {
+	// A run still recorded as running is preferred to one already written
+	// off: the older daemon wrote off one run of a task and started another.
+	legacy := slices.Clone(runs)
+	slices.SortStableFunc(legacy, func(a, b store.Run) int {
+		return b2i(a.Status != store.StatusRunning) - b2i(b.Status != store.StatusRunning)
+	})
+	for _, r := range legacy {
+		if keep[r.RunID] || tasks[r.TaskID] || !legacyCandidate(r, now) {
 			continue
-		}
-		if !listed {
-			listed = true
-			if orphans, err = e.procs.Orphans(); err != nil {
-				fmt.Fprintf(os.Stderr, "dispatchqd: list orphaned processes: %v\n", err)
-			}
 		}
 		o, ok := orphanFor(orphans, r.SessionID)
 		if !ok {
@@ -159,6 +175,7 @@ func (e *Engine) Recover() (adopted []store.Run, interrupted int, err error) {
 		rec.PID = o.PID
 		take = append(take, found{rec, o.PID, start})
 		keep[r.RunID] = true
+		tasks[r.TaskID] = true
 	}
 
 	if len(gone) > 0 {
@@ -306,7 +323,11 @@ func (e *Engine) watchAdopted(ctx context.Context, t task.Task, providerID strin
 				e.letGo(t, providerID, rec.RunID)
 				return
 			}
-			e.procs.Kill(pid)
+			// Checked again right before the kill: the process may have ended
+			// since the last poll and its PID gone to another program.
+			if e.alive(pid, start) {
+				e.procs.Kill(pid)
+			}
 			for e.alive(pid, start) {
 				<-tick.C
 			}

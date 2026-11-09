@@ -78,6 +78,58 @@ describe('AllowanceStrip', () => {
     expect(screen.queryByText(/ping answered/)).toBeNull()
   })
 
+  it('puts exhausted windows and refused credit last, sorts both groups by name and dims only exhausted rows', () => {
+    const credit = {
+      ...entry('Alpha credit', []),
+      limits: {state: 'unsupported' as const, api_key: true, checked_at: ''},
+      blocked: {until: '', reason: 'credit_exhausted' as const},
+    }
+    show([
+      entry('Zulu available', [win('week', 'Week', 99)]),
+      credit,
+      entry('Beta week', [win('week', 'Week', 100)]),
+      entry('Alpha available', []),
+      entry('Gamma session', [win('five_hour', '5 hours', 100)]),
+    ])
+    const rows = screen.getByText('Alpha available').closest('.min-h-10')!.parentElement!
+    expect([...rows.children].map((row) => row.textContent)).toEqual([
+      expect.stringContaining('Alpha available'),
+      expect.stringContaining('Zulu available'),
+      expect.stringContaining('Alpha credit'),
+      expect.stringContaining('Beta week'),
+      expect.stringContaining('Gamma session'),
+    ])
+    expect([...rows.children].map((row) => row.classList.contains('opacity-60'))).toEqual([
+      false,
+      false,
+      true,
+      true,
+      true,
+    ])
+  })
+
+  it('uses the red weekly status even below 100% and leaves reset windows available', () => {
+    const used = entry('Alpha used', [win('week', 'Week', 99.5)])
+    used.urgency = {
+      provider: used.id,
+      name: used.name,
+      tier: 2,
+      urgency: 0,
+      score: 0,
+      weight: 1,
+      week_free: 0.5,
+      running: 0,
+      note: 'week used up',
+    }
+    const reset = entry('Zulu reset', [{...win('week', 'Week', 100), resets_at: '2026-10-28T09:00:00Z'}])
+    show([used, reset])
+    const usedRow = screen.getByText('Alpha used').closest('.min-h-10')!
+    const resetRow = screen.getByText('Zulu reset').closest('.min-h-10')!
+    expect(resetRow.compareDocumentPosition(usedRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(usedRow.classList.contains('opacity-60')).toBe(true)
+    expect(resetRow.classList.contains('opacity-60')).toBe(false)
+  })
+
   it('lists the providers alphabetically by name, whatever order the configuration has', () => {
     show([
       entry('codex', []),

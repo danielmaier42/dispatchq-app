@@ -74,7 +74,10 @@ export function AllowanceStrip({
   const limits = useLimits()
   const providers = useProviders().data ?? []
   const kindOf = (id: string) => providers.find((p) => p.id === id)?.kind ?? ''
-  const shown = byAllowance((limits.data ?? []).filter((p) => p.limits.state !== 'disabled'))
+  const shown = byAllowance(
+    (limits.data ?? []).filter((p) => p.limits.state !== 'disabled'),
+    now,
+  )
   const newest = newestReading(shown)
   const threshold = backfillThreshold(useSettings().data)
 
@@ -154,7 +157,7 @@ function ProviderLine({
   const credit = creditLabel(p)
   const blocked = credit && creditBlock(p) ? '' : blockText(p, now)
   return (
-    <div className={cn(row, 'min-h-10 px-4 py-2', allowanceExhausted(p) && 'opacity-60')}>
+    <div className={cn(row, 'min-h-10 px-4 py-2', allowanceExhausted(p, now) && 'opacity-60')}>
       <div className={cn(head, 'flex min-w-0 items-center gap-2')}>
         <ProviderLogo kind={kind} className="size-4" />
         <Tooltip

@@ -108,6 +108,28 @@ describe('AllowanceStrip', () => {
     ])
   })
 
+  it('uses the red weekly status even below 100% and leaves reset windows available', () => {
+    const used = entry('Alpha used', [win('week', 'Week', 99.5)])
+    used.urgency = {
+      provider: used.id,
+      name: used.name,
+      tier: 2,
+      urgency: 0,
+      score: 0,
+      weight: 1,
+      week_free: 0.5,
+      running: 0,
+      note: 'week used up',
+    }
+    const reset = entry('Zulu reset', [{...win('week', 'Week', 100), resets_at: '2026-10-28T09:00:00Z'}])
+    show([used, reset])
+    const usedRow = screen.getByText('Alpha used').closest('.min-h-10')!
+    const resetRow = screen.getByText('Zulu reset').closest('.min-h-10')!
+    expect(resetRow.compareDocumentPosition(usedRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(usedRow.classList.contains('opacity-60')).toBe(true)
+    expect(resetRow.classList.contains('opacity-60')).toBe(false)
+  })
+
   it('lists the providers alphabetically by name, whatever order the configuration has', () => {
     show([
       entry('codex', []),

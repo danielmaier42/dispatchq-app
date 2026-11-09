@@ -21,6 +21,7 @@ import (
 type fakeProcs struct {
 	mu      sync.Mutex
 	starts  map[int]string
+	checks  int
 	killed  []int
 	orphans []Orphan
 }
@@ -30,6 +31,7 @@ func newFakeProcs() *fakeProcs { return &fakeProcs{starts: map[int]string{}} }
 func (f *fakeProcs) StartTime(pid int) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.checks++
 	s, ok := f.starts[pid]
 	if !ok {
 		return "", errors.New("no such process")
@@ -205,9 +207,19 @@ func TestCancelStopsTakenBackRun(t *testing.T) {
 func TestCancelDoesNotKillReusedPID(t *testing.T) {
 	e, st, procs, _ := daemonDies(t)
 	e.adoptPoll = time.Hour
+	procs.mu.Lock()
+	before := procs.checks
+	procs.mu.Unlock()
 	if _, _, err := e.Recover(); err != nil {
 		t.Fatal(err)
 	}
+	// Recover checks the process once; the watcher's first check is the
+	// next. After it the watcher waits for the next poll, an hour away.
+	waitFor(t, func() bool {
+		procs.mu.Lock()
+		defer procs.mu.Unlock()
+		return procs.checks >= before+2
+	})
 	procs.spawn(41315, "Tue Nov 10 08:00:00 2026")
 	if err := e.CancelRun("run-1"); err != nil {
 		t.Fatal(err)

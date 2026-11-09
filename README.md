@@ -161,9 +161,10 @@ These steps install DispatchQ on macOS. For Windows, see
 The package installs **DispatchQ** to `/Applications`, sets up a per-user
 LaunchAgent so the daemon starts at login, and opens **DispatchQ** when it is
 done, so you can start adding tasks right away. Installing over an existing
-version works the same way: the installer closes the open DispatchQ window first
-(the daemon and any running task are not interrupted) and reopens the new
-version at the end, so an update takes effect without a manual restart.
+version works the same way: the installer closes the open DispatchQ window first,
+replaces the daemon and reopens the new version at the end, so an update takes
+effect without a manual restart. A task that is running during the update keeps
+running: the new daemon takes the run back (see *Runs survive a daemon restart*).
 
 The installer verifies the hand-over instead of assuming it: it waits until the
 daemon that answers on `127.0.0.1:10765` reports the version it just installed,
@@ -445,7 +446,18 @@ explains it.
 **Unattended by design**
 
 - **Hung runs are killed** after a configurable idle timeout, whole process
-  group included. Orphaned runs are recovered after a crash or power loss.
+  group included. Runs left without a process after a crash or power loss are
+  marked interrupted.
+- **Runs survive a daemon restart.** A run's process does not stop when the
+  daemon does (an update, a crash). The next daemon takes the run back: it
+  shows as *running* with its process id, its task is not started a second
+  time, *Cancel* and *Continue in Terminal* stop it, and when it ends it is
+  recorded as *failed* with the reason that its exit status and the output
+  written after the restart could not be captured; its session holds the
+  result. The daemon log says `took back run …`. A run an older version
+  already wrote off as interrupted is taken back the same way when its headless
+  harness is still running with that session (Claude Code, within seven days).
+  The idle timeout does not apply to a run taken back.
 - **Wake and stay awake.** On macOS, `pmset` wakes the Mac at each task's time
   plus an hourly heartbeat, `caffeinate` holds it through a run, and a run
   frozen across a long sleep is not mistaken for a hung one. A broken wake setup
@@ -2168,7 +2180,7 @@ environment variable):
 | `artifacts/<id>/<file>` | The published files themselves (snapshots copied at publish time). |
 | `notifications.json` | Outbox of notifications sent with `dispatchq notify`, waiting for the daemon to deliver them (normally empty). |
 | `inbox.json` | The last 200 notifications the daemon sent (title, message, kind, what each points at, read flag), as listed in the Notifications view. |
-| `state.json` | Machine bookkeeping: read/unread flags (runs and artifacts), which artifacts have been notified about, cron anchors, pending-resume sessions, the provider health you were last told about, the latest credit proof of each API-key account (ping or run, answered or refused), which queue groups are folded shut, dismissed update version, the What's new edition you closed, whether the check for tasks that still use the 1.x names is done. |
+| `state.json` | Machine bookkeeping: read/unread flags (runs and artifacts), which artifacts have been notified about, cron anchors, pending-resume sessions, the process of each run in flight (so a restarted daemon can take it back), the provider health you were last told about, the latest credit proof of each API-key account (ping or run, answered or refused), which queue groups are folded shut, dismissed update version, the What's new edition you closed, whether the check for tasks that still use the 1.x names is done. |
 | `dispatchqd.out.log` / `dispatchqd.err.log` | Daemon stdout/stderr on macOS; on Windows the daemon log is `dispatchqd.log`. |
 | `../claudeq` | After an update from a 1.x version: a link from the old data folder to this one. |
 | `.lock` / `.daemon.lock` | Lock files, both empty of interest. `.lock` serializes config/state writes between the daemon and a `dispatchq` command; `.daemon.lock` holds the running daemon's pid and is what makes a second daemon on the same store refuse to start. Both are released when the holding process exits, so neither needs clearing by hand. |

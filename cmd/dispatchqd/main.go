@@ -165,11 +165,6 @@ func cmdRun(args []string) error {
 		return err
 	}
 
-	// A fresh process means nothing is actually running: mark any run left as
-	// "running" (from a crash/power loss) as interrupted, and prune old history.
-	if n, err := st.ReconcileRunningRuns(time.Now()); err == nil && n > 0 {
-		fmt.Fprintf(os.Stdout, "dispatchqd: reconciled %d interrupted run(s)\n", n)
-	}
 	if cfg, err := st.LoadConfig(); err == nil {
 		_ = st.PruneHistory(cfg.Settings.RunHistoryLimit())
 		// Say it out loud: a daemon that starts nothing all night looks broken
@@ -227,6 +222,20 @@ func cmdRun(args []string) error {
 		eng.SetSleepInhibitor(plat.sleep)
 	}
 	eng.SetNotifier(liveNotifier{st: st, desktop: plat.desktop})
+	// A run's process can outlive the daemon that started it (an update that
+	// kills the old daemon, a crash). Take back every run still going before
+	// the first tick, so it shows as running and its task does not start a
+	// second time; only runs with no process left are marked interrupted.
+	adopted, interrupted, err := eng.Recover()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "dispatchqd: recover runs:", err)
+	}
+	for _, r := range adopted {
+		fmt.Fprintf(os.Stdout, "dispatchqd: took back run %s (%s), still running as process %d\n", r.RunID, r.TaskName, r.PID)
+	}
+	if interrupted > 0 {
+		fmt.Fprintf(os.Stdout, "dispatchqd: reconciled %d interrupted run(s)\n", interrupted)
+	}
 	// Each provider's allowance is read without spending any of it: on a
 	// timer, when the dashboard asks, and whenever a run on that account ends.
 	limits := provider.NewLimitMonitor(registry, func() ([]provider.Instance, error) {

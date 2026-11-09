@@ -349,25 +349,31 @@ func (s *Store) Runs() ([]Run, error) {
 	return out, nil
 }
 
-// ReconcileRunningRuns marks any run still recorded as "running" as failed. It
-// is meant to run at startup: a fresh process means nothing is actually running,
-// so such entries are leftovers from a hard stop (crash, power loss, SIGKILL)
-// that never got to record an outcome. Returns how many it reconciled.
-func (s *Store) ReconcileRunningRuns(now time.Time) (int, error) {
+// InterruptedError is the reason a run gets when the daemon finds it recorded
+// as running at startup, with no process of it left.
+const InterruptedError = "interrupted before completing (daemon stopped unexpectedly)"
+
+// ReconcileRunningRuns marks any run still recorded as "running" as failed,
+// except the runs in keep. It is meant to run at startup, after the daemon has
+// taken back the runs whose process outlived its predecessor (keep): every
+// other "running" entry is a leftover from a hard stop that never got to
+// record an outcome. Returns how many it reconciled.
+func (s *Store) ReconcileRunningRuns(now time.Time, keep map[string]bool) (int, error) {
 	runs, err := s.Runs()
 	if err != nil {
 		return 0, err
 	}
 	n := 0
 	for _, r := range runs {
-		if r.Status != StatusRunning {
+		if r.Status != StatusRunning || keep[r.RunID] {
 			continue
 		}
 		r.Status = StatusFailed
+		r.PID = 0
 		fin := now
 		r.FinishedAt = &fin
 		if r.Error == "" {
-			r.Error = "interrupted before completing (daemon stopped unexpectedly)"
+			r.Error = InterruptedError
 		}
 		if err := s.AppendRun(r); err != nil {
 			return n, err

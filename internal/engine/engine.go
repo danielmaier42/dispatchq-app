@@ -184,6 +184,14 @@ type Engine struct {
 	runCtx    context.Context
 	runCancel context.CancelFunc
 
+	// procs is how runs whose process outlived the previous daemon are found
+	// and watched (see Recover); adoptPoll is how often such a process is
+	// checked, and adoptStop ends that watching on shutdown.
+	procs      processes
+	adoptPoll  time.Duration
+	adoptStop  context.Context
+	stopAdopts context.CancelFunc
+
 	// providers answers whether a task's harness can run right now. It is
 	// required: without it the daemon would start jobs on a CLI that is missing
 	// or logged out and record the failure at three in the morning.
@@ -241,6 +249,8 @@ func New(st *store.Store, gates *limit.Gates, r Runner, c clock.Clock, providers
 	// Runs use their own context so that cancelling the loop (SIGINT) does not
 	// immediately kill in-flight Claude processes; shutdown drains them first.
 	e.runCtx, e.runCancel = context.WithCancel(context.Background())
+	e.adoptStop, e.stopAdopts = context.WithCancel(context.Background())
+	e.procs = osProcesses{}
 	e.newRunID = func() string {
 		return e.clock.Now().UTC().Format("20060102T150405") + "-" + randid.Hex(4)
 	}
@@ -964,6 +974,7 @@ func (e *Engine) launchTask(t task.Task, settings store.Settings, resolved provi
 		CustomSystemPrompt: settings.SystemPrompt,
 		IdleTimeout:        settings.IdleTimeout(),
 		Log:                logFile,
+		Started:            func(pid int) { e.recordLive(t, rec, pid) },
 	}
 	// Per-run context so a single run can be cancelled from the dashboard
 	// without touching the daemon-wide runCtx (which shutdown owns).
@@ -1255,9 +1266,11 @@ func (e *Engine) finish(t task.Task, providerID string, rec store.Run, res provi
 	}
 	e.mu.Unlock()
 	e.awake.release()
+	e.clearLive(rec.RunID)
 
 	finished := e.clock.Now()
 	rec.FinishedAt = &finished
+	rec.PID = 0
 	rec.ExitCode = res.ExitCode
 	rec.Status = res.Status
 	if res.SessionID != "" {
@@ -1546,6 +1559,8 @@ func (e *Engine) ActiveTaskIDs() []string {
 func (e *Engine) Loop(ctx context.Context, interval time.Duration) error {
 	for {
 		if err := e.Tick(ctx); err != nil {
+			// A taken-back run is not this daemon's to wait for (see drain).
+			e.stopAdopts()
 			e.WaitIdle()
 			return err
 		}
@@ -1586,6 +1601,9 @@ func (e *Engine) Loop(ctx context.Context, interval time.Duration) error {
 // drain lets in-flight runs finish (up to ShutdownGrace) on shutdown, then
 // terminates any stragglers — so a normal stop/restart doesn't fail runs.
 func (e *Engine) drain() {
+	// A run taken back from a previous daemon is not this daemon's to wait for
+	// or stop: it is let go at once and taken back again by the next daemon.
+	e.stopAdopts()
 	done := make(chan struct{})
 	go func() { e.wg.Wait(); close(done) }()
 	select {

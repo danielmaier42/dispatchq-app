@@ -82,6 +82,7 @@ func (e *Executor) runScript(ctx context.Context, req Request) (provider.Result,
 		return provider.Result{}, fmt.Errorf("start script: %w", err)
 	}
 	defer release()
+	req.started(cmd.Process.Pid)
 
 	var idleKilled atomic.Bool
 	if req.IdleTimeout > 0 {

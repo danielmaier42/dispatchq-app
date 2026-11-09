@@ -325,6 +325,16 @@ type Request struct {
 	IdleTimeout time.Duration
 	// Log receives the raw CLI output (stdout + stderr), streamed live.
 	Log io.Writer
+	// Started, when set, is told the process id of the run's top process as
+	// soon as it runs, so the caller can record it (see store.LiveRun).
+	Started func(pid int)
+}
+
+// started reports the run's process to req.Started.
+func (r Request) started(pid int) {
+	if r.Started != nil {
+		r.Started(pid)
+	}
 }
 
 // providerRequest is the neutral description of this run handed to the adapter.
@@ -491,6 +501,7 @@ func (e *Executor) Run(ctx context.Context, req Request) (provider.Result, error
 		return provider.Result{}, fmt.Errorf("start %s: %w", invocation.Path, err)
 	}
 	defer release()
+	req.started(cmd.Process.Pid)
 
 	// Idle watchdog: kill the process if it stops producing output for too long.
 	var idleKilled atomic.Bool

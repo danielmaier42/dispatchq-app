@@ -37,6 +37,15 @@ export function byName<T extends Pick<LimitsEntry, 'id' | 'name'>>(entries: T[])
   )
 }
 
+// Exhausted allowance is distinct from an unknown or failed reading.
+export function allowanceExhausted(p: LimitsEntry): boolean {
+  return creditBlock(p) || (p.limits.windows ?? []).some((w) => w.used_percent >= 100)
+}
+
+export function byAllowance(entries: LimitsEntry[]): LimitsEntry[] {
+  return byName(entries).sort((a, b) => Number(allowanceExhausted(a)) - Number(allowanceExhausted(b)))
+}
+
 // The week sits in the same column on every provider, also where an account has
 // no five-hour window, so the rows can be read down a column.
 export function windowSlots(windows: LimitWindow[] = []): (LimitWindow | null)[] {

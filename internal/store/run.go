@@ -96,6 +96,9 @@ type Run struct {
 	ExitCode   int        `json:"exit_code"`
 	LogPath    string     `json:"log_path"`
 	Error      string     `json:"error,omitempty"`
+	// PID is the process the run executes in while it is in flight; zero once
+	// the run has ended or when it was never known.
+	PID int `json:"pid,omitempty"`
 
 	// Task is a snapshot of the definition this run used, so the run can be
 	// replayed from history even after the task leaves the queue.

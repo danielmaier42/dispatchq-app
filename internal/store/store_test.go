@@ -262,7 +262,7 @@ func TestReconcileRunningRuns(t *testing.T) {
 	if err := s.AppendRun(Run{RunID: "r2", TaskID: "b", Status: StatusSuccess, StartedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	n, err := s.ReconcileRunningRuns(now)
+	n, err := s.ReconcileRunningRuns(now, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

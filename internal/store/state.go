@@ -67,7 +67,38 @@ type State struct {
 	// was refused for credit. It outlives a restart, so an account known to be
 	// out of credit does not get the next task handed to it again.
 	CreditChecks map[string]CreditCheck `json:"credit_checks,omitempty"`
+	// LiveRuns maps a run id to the process the daemon started for it, while it
+	// is in flight. A run's process lives in its own process group, so it can
+	// outlast the daemon that started it (an update that kills the daemon, a
+	// crash). This is what lets the next daemon find it again and take it back
+	// instead of writing it off and starting the task a second time.
+	LiveRuns map[string]LiveRun `json:"live_runs,omitempty"`
 }
+
+// LiveRun identifies the process of a run in flight.
+type LiveRun struct {
+	// Run is the run as it was recorded when it started, so a run of a
+	// quiet-history task, which has no history entry while running, can still be
+	// shown and finished by a daemon that did not start it.
+	Run Run `json:"run"`
+	// PID is the run's top process.
+	PID int `json:"pid"`
+	// ProcessStart is the start time the operating system reports for PID. A
+	// PID is reused once its process is gone; the start time tells this process
+	// apart from a later one under the same number.
+	ProcessStart string `json:"process_start"`
+}
+
+// SetLiveRun records the process of a run in flight.
+func (s *State) SetLiveRun(l LiveRun) {
+	if s.LiveRuns == nil {
+		s.LiveRuns = map[string]LiveRun{}
+	}
+	s.LiveRuns[l.Run.RunID] = l
+}
+
+// ClearLiveRun forgets the process of a run that has ended.
+func (s *State) ClearLiveRun(runID string) { delete(s.LiveRuns, runID) }
 
 // CreditCheck is the latest proof of an API-key account's credit.
 type CreditCheck struct {

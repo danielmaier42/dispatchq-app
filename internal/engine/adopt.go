@@ -56,6 +56,9 @@ type processes interface {
 // recordLive writes down the process of a run that has just started, so a
 // daemon that did not start it can find it again.
 func (e *Engine) recordLive(t task.Task, rec store.Run, pid int) {
+	if !recoverRuns {
+		return
+	}
 	start, err := e.procs.StartTime(pid)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dispatchqd: run %s: read start of process %d: %v\n", rec.RunID, pid, err)

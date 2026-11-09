@@ -7,6 +7,9 @@ import "github.com/danielmaier42/claudeq/internal/proctree"
 // osProcesses is recovery's view of the process table on Unix.
 type osProcesses struct{}
 
+// recoverRuns is true: a run's process group outlives a daemon that dies.
+const recoverRuns = true
+
 func (osProcesses) StartTime(pid int) (string, error) { return proctree.StartTime(pid) }
 
 func (osProcesses) Kill(pid int) { proctree.KillTree(pid) }

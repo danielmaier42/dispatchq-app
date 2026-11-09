@@ -1,3 +1,5 @@
+//go:build unix
+
 package engine
 
 import (
@@ -66,14 +68,9 @@ type startedStub struct {
 	pid   int
 	procs *fakeProcs
 	block chan struct{}
-	calls int
-	mu    sync.Mutex
 }
 
 func (s *startedStub) Run(ctx context.Context, req executor.Request) (provider.Result, error) {
-	s.mu.Lock()
-	s.calls++
-	s.mu.Unlock()
 	s.procs.spawn(s.pid, "Mon Nov  9 20:00:04 2026")
 	req.Started(s.pid)
 	select {
@@ -81,12 +78,6 @@ func (s *startedStub) Run(ctx context.Context, req executor.Request) (provider.R
 	case <-ctx.Done():
 	}
 	return provider.Result{Status: store.StatusFailed}, nil
-}
-
-func (s *startedStub) count() int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.calls
 }
 
 func latestRun(t *testing.T, st *store.Store, runID string) store.Run {

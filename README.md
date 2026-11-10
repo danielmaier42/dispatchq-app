@@ -1755,8 +1755,8 @@ the record. Mark such a task **Quiet history** (the switch in the task form, or
   where **Cancel resume** lives.
 - While it is running, it shows like any other run: the Queue's *running*
   badge, an entry in the Log and on the Dashboard's **Running now** card, with
-  its live log and **Cancel task**. The entry is held in memory only and goes
-  when the run succeeds; `dispatchq status` reads history, so it does not list
+  its live log and **Cancel task**. The entry is held in memory only, never
+  counts as unread, and goes when the run succeeds; `dispatchq status` reads history, so it does not list
   the run.
 - The Dashboard's **Up next** card leaves it out; the Queue still lists it with
   its next run.

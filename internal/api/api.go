@@ -1068,7 +1068,7 @@ type runView struct {
 // bulk of it (on a year-old queue, 85% of a 3 MB answer) for text no list row
 // shows. Whoever needs it — replay, the log sheet — asks for that one run.
 func (s *server) listRuns(w http.ResponseWriter, _ *http.Request) {
-	runs, err := s.runs()
+	runs, unrecorded, err := s.runs()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -1082,7 +1082,7 @@ func (s *server) listRuns(w http.ResponseWriter, _ *http.Request) {
 	views := make([]runView, 0, len(runs))
 	// Newest first for the dashboard.
 	for i := len(runs) - 1; i >= 0; i-- {
-		v := s.runView(runs[i], st, active)
+		v := s.quietRunView(runs[i], st, active, unrecorded[runs[i].RunID])
 		v.Task = withoutPrompt(runs[i].Task)
 		views = append(views, v)
 	}
@@ -1090,28 +1090,42 @@ func (s *server) listRuns(w http.ResponseWriter, _ *http.Request) {
 }
 
 // runs is the history plus the runs in flight it holds no entry for (those of
-// quiet-history tasks), in the order history keeps: oldest first.
-func (s *server) runs() ([]store.Run, error) {
-	runs, err := s.d.Store.Runs()
+// quiet-history tasks), in the order history keeps: oldest first. unrecorded
+// names the runs that came from the engine rather than from history.
+func (s *server) runs() (runs []store.Run, unrecorded map[string]bool, err error) {
+	runs, err = s.d.Store.Runs()
 	if err != nil || s.d.ActiveRuns == nil {
-		return runs, err
+		return runs, nil, err
 	}
 	known := make(map[string]bool, len(runs))
 	for _, r := range runs {
 		known[r.RunID] = true
 	}
+	unrecorded = map[string]bool{}
 	for _, r := range s.d.ActiveRuns() {
 		if !known[r.RunID] {
 			runs = append(runs, r)
+			unrecorded[r.RunID] = true
 		}
 	}
-	return runs, nil
+	return runs, unrecorded, nil
+}
+
+// quietRunView is runView for a run history does not hold. It never counts as
+// unread: a quiet watcher that succeeds leaves no trace, and an unread mark
+// that comes and goes with every tick would be one.
+func (s *server) quietRunView(r store.Run, st *store.State, active map[string]bool, unrecorded bool) runView {
+	v := s.runView(r, st, active)
+	if unrecorded {
+		v.Unread = false
+	}
+	return v
 }
 
 // getRun answers with one run, prompt and all: the whole record the list sends
 // a lighter version of.
 func (s *server) getRun(w http.ResponseWriter, r *http.Request) {
-	runs, err := s.runs()
+	runs, unrecorded, err := s.runs()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -1126,7 +1140,7 @@ func (s *server) getRun(w http.ResponseWriter, r *http.Request) {
 		if runs[i].RunID != id {
 			continue
 		}
-		v := s.runView(runs[i], st, s.activeTasks())
+		v := s.quietRunView(runs[i], st, s.activeTasks(), unrecorded[id])
 		v.Task = runs[i].Task
 		writeJSON(w, http.StatusOK, v)
 		return

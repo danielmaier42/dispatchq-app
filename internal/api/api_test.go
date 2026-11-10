@@ -498,6 +498,9 @@ func TestListRunsIncludesQuietRunsInFlight(t *testing.T) {
 	if len(views) != 2 || views[0].RunID != "quiet" || views[0].Status != store.StatusRunning || views[1].RunID != "loud" {
 		t.Fatalf("want the quiet run first and the recorded one once, got %+v", views)
 	}
+	if views[0].Unread || !views[1].Unread {
+		t.Fatalf("a quiet run in flight must not count as unread, a recorded one does: %+v", views)
+	}
 	var one runView
 	if r := do(t, srv, "GET", "/api/runs/quiet", nil); r.Status != http.StatusOK {
 		t.Fatalf("GET /api/runs/quiet = %d, want the run in flight", r.Status)

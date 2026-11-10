@@ -476,6 +476,75 @@ func TestRunsAndReadAll(t *testing.T) {
 	}
 }
 
+// A quiet-history task has no history entry while it runs. The runs in flight
+// the engine reports fill that gap, so the Log and the dashboard show it as
+// running; a run history already holds is not listed twice.
+func TestListRunsIncludesQuietRunsInFlight(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	_ = st.AppendRun(store.Run{RunID: "loud", TaskID: "b", TaskName: "b", StartedAt: started.Add(-time.Minute), Status: store.StatusRunning})
+	live := []store.Run{
+		{RunID: "loud", TaskID: "b", TaskName: "b", StartedAt: started.Add(-time.Minute), Status: store.StatusRunning},
+		{RunID: "quiet", TaskID: "watch", TaskName: "Feature Status Watch", StartedAt: started, Status: store.StatusRunning},
+	}
+	srv := httptest.NewServer(handler(Deps{Store: st, ActiveRuns: func() []store.Run { return live }}))
+	t.Cleanup(srv.Close)
+
+	var views []runView
+	do(t, srv, "GET", "/api/runs", nil).into(t, &views)
+	if len(views) != 2 || views[0].RunID != "quiet" || views[0].Status != store.StatusRunning || views[1].RunID != "loud" {
+		t.Fatalf("want the quiet run first and the recorded one once, got %+v", views)
+	}
+	var one runView
+	if r := do(t, srv, "GET", "/api/runs/quiet", nil); r.Status != http.StatusOK {
+		t.Fatalf("GET /api/runs/quiet = %d, want the run in flight", r.Status)
+	} else {
+		r.into(t, &one)
+	}
+	if one.TaskName != "Feature Status Watch" {
+		t.Fatalf("single run = %+v", one)
+	}
+}
+
+// A one-shot task that has run is never due again, whatever is left of it in
+// the queue. The queue must say so instead of showing it as due.
+func TestListTasksMarksOneShotThatAlreadyRan(t *testing.T) {
+	srv, st := newServer(t, nil)
+	ran, waiting, fresh := sampleTask("ran"), sampleTask("waiting"), sampleTask("fresh")
+	watch := sampleTask("watch")
+	watch.Trigger, watch.Cron = task.TriggerCron, "* * * * *"
+	if err := st.SaveConfig(store.Config{Tasks: []task.Task{ran, waiting, fresh, watch}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateState(func(s *store.State) error {
+		s.MarkCompletedOnce("ran")
+		s.MarkCompletedOnce("waiting")
+		s.SetPendingResume("waiting", "sess", "")
+		s.MarkCompletedOnce("watch")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var views []struct {
+		ID        string `json:"id"`
+		Completed bool   `json:"completed"`
+	}
+	do(t, srv, "GET", "/api/tasks", nil).into(t, &views)
+	got := map[string]bool{}
+	for _, v := range views {
+		got[v.ID] = v.Completed
+	}
+	want := map[string]bool{"ran": true, "waiting": false, "fresh": false, "watch": false}
+	for id, w := range want {
+		if got[id] != w {
+			t.Fatalf("completed[%s] = %v, want %v (all: %v)", id, got[id], w, got)
+		}
+	}
+}
+
 // The run list is polled by several views every few seconds, so it carries no
 // prompts: they are the bulk of a long history and no row shows them.
 func TestListRunsOmitsPromptButKeepsTheTaskSnapshot(t *testing.T) {

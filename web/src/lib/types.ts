@@ -82,6 +82,9 @@ export interface QueueTask extends Task {
   last_run?: ISOTime
   // The task's interrupted session waits for the rate limit to reopen.
   waiting_for_limit?: boolean
+  // A one-shot task that has already run: the scheduler never starts it again
+  // by itself.
+  completed?: boolean
   // Why the task's provider (or pool) cannot run it right now.
   blocked_reason?: string
   // Names of the jobs this one still waits for.

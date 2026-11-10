@@ -335,7 +335,7 @@ func cmdRun(args []string) error {
 		Addr: *addr,
 		Handler: api.Handler(api.Deps{
 			Store: st, Runner: eng, Canceler: eng, TakeOver: eng,
-			ChooseFolder: plat.chooseFolder, ActiveTasks: eng.ActiveTaskIDs,
+			ChooseFolder: plat.chooseFolder, ActiveTasks: eng.ActiveTaskIDs, ActiveRuns: eng.ActiveRuns,
 			SaveFile:     plat.saveFile,
 			OpenTerminal: plat.openTerminal,
 			WakeError:    eng.WakeError, WarmFileAccess: plat.warmFileAccess, Updates: updates,

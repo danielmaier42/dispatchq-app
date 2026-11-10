@@ -197,11 +197,15 @@ type Engine struct {
 	// or logged out and record the failure at three in the morning.
 	providers *provider.Checker
 
-	mu                sync.Mutex
-	active            map[string]bool               // taskID -> currently running
-	cancels           map[string]context.CancelFunc // runID -> stops that run's process
-	canceled          map[string]bool               // runID -> user requested cancellation
-	takeovers         map[string]chan store.Run     // runID -> waits for the record of a run taken over by hand
+	mu        sync.Mutex
+	active    map[string]bool               // taskID -> currently running
+	cancels   map[string]context.CancelFunc // runID -> stops that run's process
+	canceled  map[string]bool               // runID -> user requested cancellation
+	takeovers map[string]chan store.Run     // runID -> waits for the record of a run taken over by hand
+	// inflight is the start record of every run in flight, by run id. A
+	// quiet-history run has no history entry until it ends (and none at all
+	// when it succeeds), so this is the only place it can be seen running.
+	inflight          map[string]store.Run
 	nonParallelActive int
 	parallelActive    int
 	// runningOn counts the runs in flight per provider instance, which a pool
@@ -242,6 +246,7 @@ func New(st *store.Store, gates *limit.Gates, r Runner, c clock.Clock, providers
 		cancels:        map[string]context.CancelFunc{},
 		canceled:       map[string]bool{},
 		takeovers:      map[string]chan store.Run{},
+		inflight:       map[string]store.Run{},
 		runningOn:      map[string]int{},
 		providerHealth: map[string]string{},
 		holdLog:        os.Stdout,
@@ -359,8 +364,16 @@ func (e *Engine) Tick(ctx context.Context) error {
 		ready[a.task.ID] = a.resolved
 	}
 
-	selected := schedule.Select(runnable, e.runningState())
-	maps.Copy(held, schedule.Held(runnable, e.runningState()))
+	// A task that runs alone and has been held back for long enough gets its
+	// turn ahead of parallel work that keeps coming due (see schedule.Select).
+	// How long each one has waited is what the earlier ticks wrote down.
+	since := map[string]time.Time{}
+	for id, h := range e.holds.snapshot() {
+		since[id] = h.Since
+	}
+	overdue := schedule.Overdue(runnable, since, now)
+	selected := schedule.Select(runnable, e.runningState(), overdue)
+	maps.Copy(held, schedule.Held(runnable, e.runningState(), overdue))
 	e.holds.update(held, now, e.holdLog)
 	starts := make([]start, 0, len(selected))
 	for _, t := range selected {
@@ -935,6 +948,7 @@ func (e *Engine) launchTask(t task.Task, settings store.Settings, resolved provi
 	}
 
 	e.active[t.ID] = true
+	e.inflight[runID] = rec
 	if id := resolved.Instance.ID; id != "" {
 		e.runningOn[id]++
 	}
@@ -1254,6 +1268,7 @@ func (e *Engine) finish(t task.Task, providerID string, rec store.Run, res provi
 	delete(e.canceled, rec.RunID)
 	delete(e.takeovers, rec.RunID)
 	delete(e.cancels, rec.RunID)
+	delete(e.inflight, rec.RunID)
 	if providerID != "" {
 		if e.runningOn[providerID]--; e.runningOn[providerID] <= 0 {
 			delete(e.runningOn, providerID)
@@ -1540,6 +1555,19 @@ func truncateRunes(s string, limit int) string {
 
 // WaitIdle blocks until all in-flight runs have completed.
 func (e *Engine) WaitIdle() { e.wg.Wait() }
+
+// ActiveRuns returns the start record of every run in flight, oldest first.
+// It includes the runs of quiet-history tasks, which history does not hold
+// while they run.
+func (e *Engine) ActiveRuns() []store.Run {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	out := slices.Collect(maps.Values(e.inflight))
+	slices.SortFunc(out, func(a, b store.Run) int {
+		return cmp.Or(a.StartedAt.Compare(b.StartedAt), cmp.Compare(a.RunID, b.RunID))
+	})
+	return out
+}
 
 // ActiveTaskIDs returns the ids of tasks currently running.
 func (e *Engine) ActiveTaskIDs() []string {

@@ -71,7 +71,7 @@ func TestDueCron(t *testing.T) {
 
 func TestSelectExclusiveRunsAlone(t *testing.T) {
 	due := []task.Task{base("hi", task.TriggerASAP)} // non-parallel by default
-	got := Select(due, Running{})
+	got := Select(due, Running{}, nil)
 	if len(got) != 1 || got[0].ID != "hi" {
 		t.Fatalf("expected [hi], got %v", ids(got))
 	}
@@ -79,7 +79,7 @@ func TestSelectExclusiveRunsAlone(t *testing.T) {
 
 func TestSelectNothingWhenExclusiveRunning(t *testing.T) {
 	due := []task.Task{base("a", task.TriggerASAP)}
-	if got := Select(due, Running{NonParallel: true}); got != nil {
+	if got := Select(due, Running{NonParallel: true}, nil); got != nil {
 		t.Fatalf("expected nothing while exclusive running, got %v", ids(got))
 	}
 }
@@ -92,7 +92,7 @@ func TestSelectBatchesParallelInPriorityOrder(t *testing.T) {
 	excl := base("e", task.TriggerASAP)
 
 	// [p1, p2, e]: both parallels start; the exclusive waits behind them.
-	got := Select([]task.Task{p1, p2, excl}, Running{})
+	got := Select([]task.Task{p1, p2, excl}, Running{}, nil)
 	if want := []string{"p1", "p2"}; !equal(ids(got), want) {
 		t.Fatalf("got %v, want %v", ids(got), want)
 	}
@@ -104,7 +104,7 @@ func TestSelectExclusiveFirstBlocksLowerParallel(t *testing.T) {
 	p1.Parallel = true
 
 	// [e, p1]: e must run alone; p1 waits despite being parallel.
-	got := Select([]task.Task{excl, p1}, Running{})
+	got := Select([]task.Task{excl, p1}, Running{}, nil)
 	if want := []string{"e"}; !equal(ids(got), want) {
 		t.Fatalf("got %v, want %v", ids(got), want)
 	}
@@ -115,7 +115,7 @@ func TestSelectAddsParallelWhileParallelRunning(t *testing.T) {
 	p.Parallel = true
 	excl := base("e", task.TriggerASAP)
 
-	got := Select([]task.Task{p, excl}, Running{Parallel: true})
+	got := Select([]task.Task{p, excl}, Running{Parallel: true}, nil)
 	if want := []string{"p"}; !equal(ids(got), want) {
 		t.Fatalf("got %v, want %v (exclusive must wait for parallels to drain)", ids(got), want)
 	}
@@ -148,26 +148,29 @@ func TestHeld(t *testing.T) {
 		alone   = "Runs alone, so it waits until the running tasks finish."
 		behind  = "Waits behind a higher-priority task that runs alone."
 		blocked = "A task that runs alone is running; nothing else starts until it finishes."
+		turn    = "Runs alone and has waited long enough: nothing new starts until the running tasks finish."
+		first   = "Lets a task that runs alone and has waited longer go first; starts after it."
 	)
 	tests := []struct {
 		name    string
 		due     []task.Task
 		running Running
+		overdue map[string]bool
 		want    map[string]string
 	}{
-		{"everything starts", []task.Task{par("a"), par("b")}, Running{}, map[string]string{}},
-		{"exclusive running holds all", []task.Task{par("a"), excl("b")}, Running{NonParallel: true},
+		{"everything starts", []task.Task{par("a"), par("b")}, Running{}, nil, map[string]string{}},
+		{"exclusive running holds all", []task.Task{par("a"), excl("b")}, Running{NonParallel: true}, nil,
 			map[string]string{"a": blocked, "b": blocked}},
-		{"exclusive waits for parallel", []task.Task{excl("a"), par("b")}, Running{Parallel: true},
+		{"exclusive waits for parallel", []task.Task{excl("a"), par("b")}, Running{Parallel: true}, nil,
 			map[string]string{"a": alone, "b": behind}},
-		{"exclusive after a started parallel", []task.Task{par("a"), excl("b"), par("c")}, Running{},
+		{"exclusive after a started parallel", []task.Task{par("a"), excl("b"), par("c")}, Running{}, nil,
 			map[string]string{"b": alone, "c": behind}},
-		{"tasks behind a started exclusive", []task.Task{excl("a"), par("b")}, Running{},
+		{"tasks behind a started exclusive", []task.Task{excl("a"), par("b")}, Running{}, nil,
 			map[string]string{"b": behind}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := Held(tc.due, tc.running)
+			got := Held(tc.due, tc.running, tc.overdue)
 			if len(got) != len(tc.want) {
 				t.Fatalf("Held = %v, want %v", got, tc.want)
 			}
@@ -177,5 +180,47 @@ func TestHeld(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A task that runs alone sits below parallel tasks that come due every minute.
+// Before it has waited ExclusiveFairWait priority decides and the parallel ones
+// start; after that nothing new starts until the running ones finish, and then
+// it runs alone.
+func TestSelectFairDrainForStarvedExclusive(t *testing.T) {
+	watch := base("watch", task.TriggerCron)
+	watch.Parallel = true
+	review := base("review", task.TriggerASAP)
+	due := []task.Task{watch, review}
+	now := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
+
+	fresh := Overdue(due, map[string]time.Time{"review": now.Add(-time.Minute)}, now)
+	if got := Select(due, Running{Parallel: true}, fresh); !equal(ids(got), []string{"watch"}) {
+		t.Fatalf("before the fair wait priority decides: got %v, want [watch]", ids(got))
+	}
+
+	overdue := Overdue(due, map[string]time.Time{"review": now.Add(-ExclusiveFairWait)}, now)
+	if !overdue["review"] || overdue["watch"] {
+		t.Fatalf("Overdue = %v, want only review", overdue)
+	}
+	if got := Select(due, Running{Parallel: true}, overdue); len(got) != 0 {
+		t.Fatalf("while the queue drains nothing new starts, got %v", ids(got))
+	}
+	if got := Select(due, Running{}, overdue); !equal(ids(got), []string{"review"}) {
+		t.Fatalf("once the queue is empty the overdue task runs alone, got %v", ids(got))
+	}
+}
+
+func TestOverdueLeavesParallelAndBackfillAlone(t *testing.T) {
+	now := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
+	par := base("par", task.TriggerASAP)
+	par.Parallel = true
+	fill := base("fill", task.TriggerASAP)
+	fill.Backfill = true
+	unseen := base("unseen", task.TriggerASAP)
+	long := now.Add(-time.Hour)
+	got := Overdue([]task.Task{par, fill, unseen}, map[string]time.Time{"par": long, "fill": long}, now)
+	if len(got) != 0 {
+		t.Fatalf("Overdue = %v, want none", got)
 	}
 }

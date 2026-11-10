@@ -68,7 +68,12 @@ type Deps struct {
 	ChooseFolder FolderChooser   // optional; enables the native folder dialog
 	SaveFile     SaveFileDialog  // optional; enables the task export dialog
 	ActiveTasks  func() []string // optional; ids of currently-running tasks (hidden from the queue)
-	WakeError    func() string   // optional; last scheduled-wake error ("" if healthy)
+	// ActiveRuns reports the start record of every run in flight. History
+	// holds no entry for a running quiet-history task, so without it the Log
+	// and the dashboard would say nothing is running while it runs. Optional
+	// (engine.Engine.ActiveRuns).
+	ActiveRuns func() []store.Run
+	WakeError  func() string // optional; last scheduled-wake error ("" if healthy)
 	// LimitedUntil reports when the global rate-limit gate reopens (zero time
 	// when it is open), so the dashboard can say the queue is waiting rather
 	// than stuck. Optional (engine.Engine.LimitedUntil).
@@ -302,6 +307,13 @@ func (s *server) listTasks(w http.ResponseWriter, r *http.Request) {
 		if !active[t.ID] && st != nil && hasPendingResume(st, t.ID) {
 			v.WaitingForLimit = true
 		}
+		// A one-shot task that has already run is never due again; the
+		// scheduler only skips it. Showing it as due would promise a start that
+		// never comes, so the queue says it ran instead.
+		if !active[t.ID] && st != nil && t.Trigger != task.TriggerCron &&
+			st.IsCompletedOnce(t.ID) && !hasPendingResume(st, t.ID) {
+			v.Completed = true
+		}
 		// For recurring tasks, surface the next scheduled occurrence so the UI can
 		// show it (e.g. as a tooltip on the cron expression). The task is already
 		// validated on save, so a parse error here is not expected; skip silently.
@@ -332,6 +344,10 @@ type taskView struct {
 	// WaitingForLimit marks a task whose interrupted Claude session is queued to
 	// resume once the rate-limit gate reopens.
 	WaitingForLimit bool `json:"waiting_for_limit,omitempty"`
+	// Completed marks a one-shot task that has already run and is still in the
+	// queue. The scheduler never starts it again by itself; only a start by hand
+	// runs it, and removing it clears the mark for a task added under its id.
+	Completed bool `json:"completed,omitempty"`
 	// BlockedReason says why the task's provider cannot run it. The task stays
 	// queued and starts by itself once the provider works again, so the queue
 	// has to say that rather than showing a job that silently never runs.
@@ -1052,7 +1068,7 @@ type runView struct {
 // bulk of it (on a year-old queue, 85% of a 3 MB answer) for text no list row
 // shows. Whoever needs it — replay, the log sheet — asks for that one run.
 func (s *server) listRuns(w http.ResponseWriter, _ *http.Request) {
-	runs, err := s.d.Store.Runs()
+	runs, err := s.runs()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -1073,10 +1089,29 @@ func (s *server) listRuns(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, views)
 }
 
+// runs is the history plus the runs in flight it holds no entry for (those of
+// quiet-history tasks), in the order history keeps: oldest first.
+func (s *server) runs() ([]store.Run, error) {
+	runs, err := s.d.Store.Runs()
+	if err != nil || s.d.ActiveRuns == nil {
+		return runs, err
+	}
+	known := make(map[string]bool, len(runs))
+	for _, r := range runs {
+		known[r.RunID] = true
+	}
+	for _, r := range s.d.ActiveRuns() {
+		if !known[r.RunID] {
+			runs = append(runs, r)
+		}
+	}
+	return runs, nil
+}
+
 // getRun answers with one run, prompt and all: the whole record the list sends
 // a lighter version of.
 func (s *server) getRun(w http.ResponseWriter, r *http.Request) {
-	runs, err := s.d.Store.Runs()
+	runs, err := s.runs()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return

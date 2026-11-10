@@ -278,6 +278,7 @@ func (e *Engine) adopt(rec store.Run, pid int, start string) (store.Run, error) 
 	runCtx, cancelRun := context.WithCancel(e.runCtx)
 	e.mu.Lock()
 	e.active[t.ID] = true
+	e.inflight[rec.RunID] = rec
 	if providerID != "" {
 		e.runningOn[providerID]++
 	}
@@ -344,6 +345,7 @@ func (e *Engine) watchAdopted(ctx context.Context, t task.Task, providerID strin
 func (e *Engine) letGo(t task.Task, providerID, runID string) {
 	e.mu.Lock()
 	delete(e.cancels, runID)
+	delete(e.inflight, runID)
 	delete(e.active, t.ID)
 	if providerID != "" {
 		if e.runningOn[providerID]--; e.runningOn[providerID] <= 0 {

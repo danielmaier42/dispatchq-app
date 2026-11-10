@@ -34,7 +34,7 @@ function run(id: string, status: Run['status'], startedAgoH: number): Run {
 }
 
 describe('overview', () => {
-  it('upNext puts due tasks first in queue order, then by start time, without quiet-history tasks', () => {
+  it('upNext puts due tasks first in queue order, then by start time, without quiet-history or already-run tasks', () => {
     const tasks = [
       task('cron-late', {trigger: 'cron', next_run: '2026-10-20T03:00:00Z'}),
       task('asap-b'),
@@ -44,6 +44,7 @@ describe('overview', () => {
       task('busy', {running: true}),
       task('cron-none', {trigger: 'cron'}),
       task('quiet', {trigger: 'cron', next_run: '2026-10-19T12:05:00Z', quiet_history: true}),
+      task('ran', {completed: true}),
     ]
     expect(upNext(tasks, now).map((n) => n.task.id)).toEqual([
       'asap-b',

@@ -379,7 +379,8 @@ explains it.
 - **Priority is list order**, top first. Reorder in the app or with
   `dispatchq move`.
 - **One at a time by default.** A task marked *parallel* runs alongside other
-  parallel tasks.
+  parallel tasks. A task that runs alone and has waited five minutes behind
+  parallel work gets its turn: nothing new starts until it has run.
 - **Pause everything** with one switch in Settings: a run in flight finishes,
   nothing new starts, and the Computer is not woken.
 
@@ -573,7 +574,8 @@ first. The window opens on the Dashboard:
   **running now** (and runs a rate limit paused, with their resume time,
   counted apart as *N waiting*; a run whose provider has no API credit left
   says only *No credit left*, without a resume time), what is **up next** (due tasks first, with the
-  reason a task is held; tasks with quiet history are left out), runs that
+  reason a task is held; tasks with quiet history and one-time tasks that already
+  ran are left out), runs that
   **failed in the last 24 hours**, and the **last 7 days** (runs, success rate,
   tokens and cost). Each entry opens its log or its task. Running now lists five
   runs and its *+N more* unfolds the rest in place; on the other cards it opens
@@ -1751,8 +1753,11 @@ the record. Mark such a task **Quiet history** (the switch in the task form, or
   itself: it closes that provider's gate and holds up every other task on it,
   so it is the answer to "why is nothing running?" — and its Log entry is
   where **Cancel resume** lives.
-- While it is running, the Queue shows the task's *running* badge as usual, but
-  there is no Log entry to open (and so no live log or **Cancel task**).
+- While it is running, it shows like any other run: the Queue's *running*
+  badge, an entry in the Log and on the Dashboard's **Running now** card, with
+  its live log and **Cancel task**. The entry is held in memory only, never
+  counts as unread, and goes when the run succeeds; `dispatchq status` reads history, so it does not list
+  the run.
 - The Dashboard's **Up next** card leaves it out; the Queue still lists it with
   its next run.
 
@@ -2110,6 +2115,18 @@ that.
 
 - **Eligibility.** On each tick the daemon starts every task that is due and
   permitted by priority, concurrency, and the limit gate.
+- **A task that runs alone gets its turn.** Priority decides first: a parallel
+  task above it starts, and the task that runs alone waits for the running ones
+  to finish. Parallel work that comes due every minute would keep it waiting
+  for good, so once it has waited five minutes it goes first: no new task
+  starts, the running ones finish, and it runs alone. The tasks held back stay
+  due and start right after it; their *waiting* badge says why. Backfill tasks
+  never get this turn.
+- **A one-time task runs once.** An *asap* or *earliest start* task leaves the
+  queue when it has run. If one is still listed after it ran, the Queue marks it
+  *already ran* and the Dashboard's **Up next** leaves it out: the scheduler does
+  not start it again. **Run now** runs it by hand; deleting it clears the mark, so
+  a task added later under the same id runs normally.
 - **The pause switch wins over everything.** While *Pause all runs* is on, a tick
   starts nothing and records nothing, `dispatchq run-now` and the app's **Run now**
   are refused, and no task wake is registered (only the heartbeat stays, so the

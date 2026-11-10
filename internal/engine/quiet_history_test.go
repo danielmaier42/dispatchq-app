@@ -95,9 +95,18 @@ func TestQuietRunIsNotRecordedWhileRunning(t *testing.T) {
 	if ids := e.ActiveTaskIDs(); len(ids) != 1 || ids[0] != "watch" {
 		t.Fatalf("the task still counts as running for the queue: %v", ids)
 	}
+	// History holds nothing for it, so the engine is what the Log and the
+	// dashboard learn from that it runs.
+	if live := e.ActiveRuns(); len(live) != 1 || live[0].RunID != "run-1" ||
+		live[0].Status != store.StatusRunning || live[0].TaskID != "watch" {
+		t.Fatalf("the quiet run in flight must be reported as running: %+v", live)
+	}
 	close(r.block)
 	e.WaitIdle()
 	if runs, _ := st.Runs(); len(runs) != 0 {
 		t.Fatalf("finished quiet run must be gone: %+v", runs)
+	}
+	if live := e.ActiveRuns(); len(live) != 0 {
+		t.Fatalf("a finished run is no longer in flight: %+v", live)
 	}
 }

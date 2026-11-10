@@ -10,7 +10,7 @@ import type {QueueContext} from './use-queue-context'
 
 // The chips that say why a task is not running yet; they sit next to the name.
 // The rest describe how it runs and sit with the schedule.
-export const STATUS_CHIPS = new Set(['blocked', 'rescheduled', 'hold', 'deps'])
+export const STATUS_CHIPS = new Set(['ran', 'blocked', 'rescheduled', 'hold', 'deps'])
 
 export interface Chip {
   key: string
@@ -24,6 +24,15 @@ export interface Chip {
 // first and what merely describes it last.
 export function taskChips(t: QueueTask, ctx: QueueContext): Chip[] {
   const out: Chip[] = []
+  if (t.completed)
+    out.push({
+      key: 'ran',
+      label: 'Already ran',
+      tone: 'neutral',
+      tip:
+        'This one-time task has already run, so the scheduler does not start it again. ' +
+        'Run now starts it by hand; delete it if it is no longer needed.',
+    })
   if (t.blocked_reason)
     out.push({
       key: 'blocked',

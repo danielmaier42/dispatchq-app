@@ -848,7 +848,9 @@ func (s *server) continueRun(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusServiceUnavailable, errors.New("continue not available"))
 		return
 	}
-	runs, err := s.d.Store.Runs()
+	// A quiet-history run in flight is not in history yet, but it is taken over
+	// like any other running run.
+	runs, _, err := s.runs()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return

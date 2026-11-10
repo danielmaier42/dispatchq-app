@@ -1054,6 +1054,44 @@ func TestContinueRunTakesOverARunningRun(t *testing.T) {
 	}
 }
 
+// TestContinueRunTakesOverAQuietRunInFlight: a quiet-history run has no
+// history entry while it runs, yet the Log offers to continue it. The engine's
+// record of it is what the take-over works from.
+func TestContinueRunTakesOverAQuietRunInFlight(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, _ := st.LoadConfig()
+	cfg.Providers[0].BinaryPath = "/opt/claude"
+	if err := st.SaveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	tk := sampleTask("watch")
+	tk.WorkingDir, tk.QuietHistory = t.TempDir(), true
+	live := store.Run{RunID: "q1", TaskID: "watch", TaskName: "watch", StartedAt: time.Now(),
+		Status: store.StatusRunning, SessionID: "sess-1", Task: &tk}
+	to := &stubTakeover{rec: store.Run{RunID: "q1", Status: store.StatusCanceled, SessionID: "sess-final"}}
+	var argv []string
+	srv := httptest.NewServer(handler(Deps{Store: st, TakeOver: to,
+		ActiveRuns: func() []store.Run { return []store.Run{live} },
+		OpenTerminal: func(_ context.Context, _ string, a []string) error {
+			argv = a
+			return nil
+		}}))
+	t.Cleanup(srv.Close)
+
+	if r := do(t, srv, "POST", "/api/runs/q1/continue", nil); r.Status != http.StatusNoContent {
+		t.Fatalf("continue status = %d (%s)", r.Status, r.Body)
+	}
+	if to.got != "q1" {
+		t.Fatalf("take-over got run %q, want q1", to.got)
+	}
+	if want := "/opt/claude --resume sess-final"; strings.Join(argv, " ") != want {
+		t.Fatalf("argv = %v, want %q", argv, want)
+	}
+}
+
 // TestContinueRunTakeOverFailureOpensNothing: a run that could not be stopped,
 // or stopped without a session, never gets a terminal of its own.
 func TestContinueRunTakeOverFailureOpensNothing(t *testing.T) {

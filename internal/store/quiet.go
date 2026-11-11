@@ -34,29 +34,48 @@ const (
 // PruneQuietRuns drops the quiet runs older than QuietRunMaxAge at now and,
 // per task, all but the newest QuietRunsPerTask, deleting their logs with
 // them, once a batch of them is due (see QuietPruneBatch). Every other run is
-// left exactly as it is. History is first read without the cross-process
-// write lock; only a due rewrite takes it, and reads again under it, so a run
-// another process appends meanwhile is not lost and a tick with nothing to do
-// holds nobody up.
+// left exactly as it is. It is what runs after every finished run.
 func (s *Store) PruneQuietRuns(now time.Time) error {
+	return s.rewriteHistoryIfDue(func(rewrite bool) (bool, error) {
+		return s.pruneQuietRunsLocked(now, true, rewrite)
+	})
+}
+
+// PruneAllQuietRuns is PruneQuietRuns without waiting for a batch: every run
+// due goes now. The daemon calls it at startup, since a queue whose only
+// quiet task stopped may not finish another run for a long time.
+func (s *Store) PruneAllQuietRuns(now time.Time) error {
+	return s.rewriteHistoryIfDue(func(rewrite bool) (bool, error) {
+		return s.pruneQuietRunsLocked(now, false, rewrite)
+	})
+}
+
+// rewriteHistoryIfDue runs a prune pass that rewrites history.jsonl. The pass
+// is first run without the cross-process write lock, to decide only, so a call
+// with nothing to drop holds nobody up. A due rewrite takes the lock and runs
+// the pass again under it: the rewrite replaces the file, and another
+// process's AppendRun landing in between would otherwise be lost. A read error
+// in the first pass may be such an append caught mid-line, so it is left to
+// the pass under the lock to decide.
+func (s *Store) rewriteHistoryIfDue(pass func(rewrite bool) (bool, error)) error {
 	s.mu.Lock()
-	due, err := s.pruneQuietRunsLocked(now, false)
+	due, err := pass(false)
 	s.mu.Unlock()
-	if err != nil || !due {
-		return err
+	if err == nil && !due {
+		return nil
 	}
 	return s.withWriteLock(func() error {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		_, err := s.pruneQuietRunsLocked(now, true)
+		_, err := pass(true)
 		return err
 	})
 }
 
-// pruneQuietRunsLocked reports whether a batch of quiet runs is due and, when
-// rewrite is set, drops it. The caller holds s.mu, and for a rewrite the
-// cross-process write lock as well.
-func (s *Store) pruneQuietRunsLocked(now time.Time, rewrite bool) (bool, error) {
+// pruneQuietRunsLocked reports whether quiet runs are due to be dropped (with
+// batch, only a whole batch counts) and, when rewrite is set, drops them. The
+// caller holds s.mu, and for a rewrite the cross-process write lock as well.
+func (s *Store) pruneQuietRunsLocked(now time.Time, batch, rewrite bool) (bool, error) {
 	latest, order, err := s.readHistoryLocked()
 	if err != nil || len(order) == 0 {
 		return false, err
@@ -83,7 +102,7 @@ func (s *Store) pruneQuietRunsLocked(now time.Time, rewrite bool) (bool, error) 
 			overdue = true
 		}
 	}
-	if len(dropped) <= QuietPruneBatch && !overdue {
+	if len(dropped) == 0 || (batch && len(dropped) <= QuietPruneBatch && !overdue) {
 		return false, nil
 	}
 	if !rewrite {

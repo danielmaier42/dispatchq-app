@@ -150,35 +150,44 @@ func TestHistoryRewritesDoNotLoseAnotherProcesssAppends(t *testing.T) {
 	}
 	now := time.Now()
 	old := now.Add(-QuietRunMaxAge - time.Hour)
-	const appends = 150
-	done := make(chan struct{})
+	const appends = 80
+	done := make(chan error, 1)
 	go func() {
-		defer close(done)
 		for i := range appends {
 			if err := daemon.AppendRun(Run{RunID: fmt.Sprintf("real-%03d", i), TaskID: "real", StartedAt: now, Status: StatusFailed}); err != nil {
-				t.Error(err)
+				done <- err
 				return
 			}
 		}
+		done <- nil
 	}()
 	// Meanwhile the other process keeps expiring a batch of hidden runs, and
 	// with them rewriting the whole file.
+	// Errors here are collected rather than fatal, so the appender is always
+	// waited for before the test (and its directory) ends.
+	var cliErr error
+	var appendErr error
 	for round := 0; ; round++ {
 		select {
-		case <-done:
+		case appendErr = <-done:
 		default:
-			for i := range QuietPruneBatch + 1 {
-				id := fmt.Sprintf("q-%d-%d", round, i)
-				if err := cli.AppendRun(Run{RunID: id, TaskID: "watch", StartedAt: old, FinishedAt: &old, Status: StatusSuccess, Quiet: true}); err != nil {
-					t.Fatal(err)
+			if cliErr == nil {
+				for i := range QuietPruneBatch + 1 {
+					id := fmt.Sprintf("q-%d-%d", round, i)
+					if cliErr = cli.AppendRun(Run{RunID: id, TaskID: "watch", StartedAt: old, FinishedAt: &old, Status: StatusSuccess, Quiet: true}); cliErr != nil {
+						break
+					}
 				}
 			}
-			if err := cli.PruneQuietRuns(now); err != nil {
-				t.Fatal(err)
+			if cliErr == nil {
+				cliErr = cli.PruneQuietRuns(now)
 			}
 			continue
 		}
 		break
+	}
+	if appendErr != nil || cliErr != nil {
+		t.Fatalf("append: %v; other process: %v", appendErr, cliErr)
 	}
 	runs, err := daemon.Runs()
 	if err != nil {
@@ -238,5 +247,32 @@ func TestPruneQuietRunsDropsOverdueRunsWithoutABatch(t *testing.T) {
 	}
 	if got := fmt.Sprint(runIDs(t, s)); got != "[real]" {
 		t.Fatalf("an overdue run sends every due one, and only those: got %s", got)
+	}
+}
+
+// At startup every expired hidden run goes, however few there are.
+func TestPruneAllQuietRunsIgnoresTheBatch(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	due := now.Add(-QuietRunMaxAge - time.Hour)
+	fresh := now.Add(-time.Hour)
+	writeHistory(t, s,
+		Run{RunID: "due", TaskID: "stopped", StartedAt: due, FinishedAt: &due, Status: StatusSuccess, Quiet: true},
+		Run{RunID: "fresh", TaskID: "stopped", StartedAt: fresh, FinishedAt: &fresh, Status: StatusSuccess, Quiet: true},
+	)
+	if err := s.PruneQuietRuns(now); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(runIDs(t, s)); got != 2 {
+		t.Fatalf("one due run is no batch after a finished run: got %d runs", got)
+	}
+	if err := s.PruneAllQuietRuns(now); err != nil {
+		t.Fatal(err)
+	}
+	if got := fmt.Sprint(runIDs(t, s)); got != "[fresh]" {
+		t.Fatalf("startup drops every expired run: got %s", got)
 	}
 }

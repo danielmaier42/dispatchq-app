@@ -419,21 +419,8 @@ func (s *Store) PruneHistory(limit int) error {
 	if limit <= 0 {
 		return nil
 	}
-	// History is read without the cross-process write lock first, so a call
-	// with nothing to drop holds nobody up. A rewrite takes the lock and reads
-	// again under it: it replaces the file, and another process's AppendRun
-	// landing in between would otherwise be lost.
-	s.mu.Lock()
-	due, err := s.pruneHistoryLocked(limit, false)
-	s.mu.Unlock()
-	if err != nil || !due {
-		return err
-	}
-	return s.withWriteLock(func() error {
-		s.mu.Lock()
-		defer s.mu.Unlock()
-		_, err := s.pruneHistoryLocked(limit, true)
-		return err
+	return s.rewriteHistoryIfDue(func(rewrite bool) (bool, error) {
+		return s.pruneHistoryLocked(limit, rewrite)
 	})
 }
 

@@ -53,17 +53,16 @@ func TestStampStreamFlushesStampedLinesToTheFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = f.Close() }()
-	stream := f
-	flush := stampStream(&stream, fixedClock())
-	if flush == nil {
-		t.Fatal("stampStream did not take the stream")
+	// Two streams on one file, as on Windows: one pipe, so the lines keep
+	// the order they were printed in.
+	stdout, stderr := f, f
+	flush := stampStream(fixedClock(), &stdout, &stderr)
+	if stdout == f || stderr != stdout {
+		t.Fatal("the streams were not moved onto one pipe")
 	}
-	if stream == f {
-		t.Fatal("the stream still points at the file")
-	}
-	for i := 0; i < 3; i++ {
-		_, _ = fmt.Fprintf(stream, "dispatchqd: line %d\n", i)
-	}
+	_, _ = fmt.Fprintf(stdout, "dispatchqd: line %d\n", 0)
+	_, _ = fmt.Fprintf(stderr, "dispatchqd: line %d\n", 1)
+	_, _ = fmt.Fprintf(stdout, "dispatchqd: line %d\n", 2)
 	flush()
 	got, err := os.ReadFile(path)
 	if err != nil {

@@ -58,30 +58,36 @@ func (w *stampWriter) Write(p []byte) (int, error) {
 // A stream that cannot be piped stays as it is. The runtime's own crash output
 // goes to file descriptor 2 directly and is not stamped, which keeps it intact
 // when the process dies before the copy could run.
+//
+// When both streams are one file (the Windows daemon log), they share one
+// pipe, so their lines stay in the order they were printed.
 func stampStdio(now func() time.Time) (restore func()) {
-	var undo []func()
-	for _, stream := range []**os.File{&os.Stdout, &os.Stderr} {
-		if u := stampStream(stream, now); u != nil {
-			undo = append(undo, u)
-		}
+	if os.Stdout == os.Stderr {
+		return stampStream(now, &os.Stdout, &os.Stderr)
 	}
+	out := stampStream(now, &os.Stdout)
+	errs := stampStream(now, &os.Stderr)
 	return func() {
-		for _, u := range undo {
-			u()
-		}
+		out()
+		errs()
 	}
 }
 
-func stampStream(stream **os.File, now func() time.Time) (restore func()) {
-	orig := *stream
+// stampStream points every one of streams (all the same file) at one pipe
+// copied to that file with stamps. It returns a no-op when there is nothing
+// to pipe.
+func stampStream(now func() time.Time, streams ...**os.File) (restore func()) {
+	orig := *streams[0]
 	if orig == nil {
-		return nil
+		return func() {}
 	}
 	r, w, err := os.Pipe()
 	if err != nil {
-		return nil
+		return func() {}
 	}
-	*stream = w
+	for _, s := range streams {
+		*s = w
+	}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

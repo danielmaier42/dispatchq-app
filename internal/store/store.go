@@ -425,7 +425,9 @@ func (s *Store) BackfillLastRuns() (int, error) {
 // An older run is kept past the limit while it is unread and did not succeed
 // (failed, auth error, canceled, interrupted, still waiting on a rate limit):
 // that is an outcome nobody has looked at yet, and scripts that read
-// history.jsonl for outcomes would lose it. It goes once it is read.
+// history.jsonl for outcomes would lose it. It goes once it is read. A run
+// still in flight (running, or waiting to resume) is kept whether read or
+// not: its log is still being written.
 //
 // Pruning works in batches: nothing is rewritten until more than a tenth of
 // the limit could be dropped, and then history goes back down to the limit.
@@ -481,7 +483,7 @@ func (s *Store) PruneHistory(limit int) error {
 	older := order[:len(order)-limit]
 	var drop, keep []string
 	for _, id := range older {
-		if r := latest[id]; r.Status != StatusSuccess && !st.IsRead(id) {
+		if r := latest[id]; !r.Status.Terminal() || (r.Status != StatusSuccess && !st.IsRead(id)) {
 			keep = append(keep, id)
 			continue
 		}

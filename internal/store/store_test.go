@@ -310,7 +310,7 @@ func TestPruneHistoryKeepsRecentAndDeletesLogs(t *testing.T) {
 
 // An unread run that did not succeed is an outcome nobody has seen yet;
 // pruning must not take it, whatever its age. Read runs and successes go as
-// before.
+// before. A run still in flight keeps its record even once read.
 func TestPruneHistoryKeepsUnreadRunsThatDidNotSucceed(t *testing.T) {
 	s := openTemp(t)
 	runs := []Run{
@@ -319,6 +319,7 @@ func TestPruneHistoryKeepsUnreadRunsThatDidNotSucceed(t *testing.T) {
 		{RunID: "old-canceled", Status: StatusCanceled},
 		{RunID: "old-interrupted", Status: StatusFailed, Error: InterruptedError},
 		{RunID: "old-limited", Status: StatusRateLimited},
+		{RunID: "old-running-read", Status: StatusRunning},
 		{RunID: "old-failed-read", Status: StatusFailed},
 		{RunID: "old-success", Status: StatusSuccess},
 		{RunID: "new-1", Status: StatusSuccess},
@@ -336,6 +337,7 @@ func TestPruneHistoryKeepsUnreadRunsThatDidNotSucceed(t *testing.T) {
 	}
 	if err := s.UpdateState(func(st *State) error {
 		st.MarkRead("old-failed-read")
+		st.MarkRead("old-running-read")
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -348,7 +350,7 @@ func TestPruneHistoryKeepsUnreadRunsThatDidNotSucceed(t *testing.T) {
 	for _, r := range got {
 		ids = append(ids, r.RunID)
 	}
-	want := []string{"old-failed", "old-auth", "old-canceled", "old-interrupted", "old-limited", "new-1", "new-2"}
+	want := []string{"old-failed", "old-auth", "old-canceled", "old-interrupted", "old-limited", "old-running-read", "new-1", "new-2"}
 	if !reflect.DeepEqual(ids, want) {
 		t.Fatalf("kept %v, want %v", ids, want)
 	}

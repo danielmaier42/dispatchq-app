@@ -36,6 +36,11 @@ type State struct {
 	// CompletedOnce marks one-shot tasks (asap/fixed) that have already run so
 	// they are not re-enqueued (PLAN.md §7).
 	CompletedOnce map[string]bool `json:"completed_once"`
+	// RemovalOwed marks one-shot tasks that were marked completed but whose
+	// removal from the queue has not been written yet (see Store.RetireTask).
+	// Only these are taken out of the queue at the next start; a task listed
+	// for any other reason is left alone.
+	RemovalOwed map[string]bool `json:"removal_owed,omitempty"`
 	// PendingResumes maps a task id to the session waiting to be picked up after
 	// a rate-limit wait (PLAN.md D4/V1), and to the provider instance that owns
 	// it. A session id means nothing outside the harness that issued it, so the
@@ -202,6 +207,17 @@ type PendingResume struct {
 	// provider cannot continue a session the old one owns, and dispatchq does not
 	// try — it starts fresh and says so.
 	ProviderID string `json:"provider_id,omitempty"`
+	// AfterInterrupt marks a session that continues because DispatchQ itself
+	// cut its run off (a shutdown, a daemon that died), not because of a limit.
+	// Such a session gets one more go: interrupted again, the task is retired.
+	AfterInterrupt bool `json:"after_interrupt,omitempty"`
+	// InterruptedRun is the run whose interruption planned a continuation of
+	// this task, so the same run met again (a daemon that died before
+	// recording it) does not count as a second interruption. It outlives the
+	// continuation's own pauses, unlike AfterInterrupt: a limit that pauses
+	// the continuation makes it an ordinary limit resume, but its one more go
+	// is spent.
+	InterruptedRun string `json:"interrupted_run,omitempty"`
 }
 
 // UnmarshalJSON accepts the shape written before the provider travelled with
@@ -309,6 +325,31 @@ func (s *State) LastStart(taskID string) (time.Time, bool) {
 // MarkCompletedOnce records that a one-shot task has run.
 func (s *State) MarkCompletedOnce(taskID string) { s.CompletedOnce[taskID] = true }
 
+// OweRemoval records that a completed one-shot task still has to leave the
+// queue.
+func (s *State) OweRemoval(taskID string) {
+	if s.RemovalOwed == nil {
+		s.RemovalOwed = map[string]bool{}
+	}
+	s.RemovalOwed[taskID] = true
+}
+
+// ClearRemovalOwed records that the task's removal is done or no longer due.
+func (s *State) ClearRemovalOwed(taskID string) { delete(s.RemovalOwed, taskID) }
+
+// IsRemovalOwed reports whether a task's removal from the queue is still owed.
+func (s *State) IsRemovalOwed(taskID string) bool { return s.RemovalOwed[taskID] }
+
+// hasLiveRun reports whether a run of the task is recorded as in flight.
+func (s *State) hasLiveRun(taskID string) bool {
+	for _, l := range s.LiveRuns {
+		if l.Run.TaskID == taskID {
+			return true
+		}
+	}
+	return false
+}
+
 // ClearCompletedOnce puts a one-shot task back in the queue.
 func (s *State) ClearCompletedOnce(taskID string) { delete(s.CompletedOnce, taskID) }
 
@@ -324,8 +365,25 @@ func (s *State) PendingResume(taskID string) (PendingResume, bool) {
 
 // SetPendingResume records that a task should continue the given session on the
 // provider that issued it.
+//
+// A task already continuing after an interruption keeps the record of that
+// (InterruptedRun) when a limit pauses it, whatever session id the harness
+// reports: it was given its one more go, and a pause on the way does not give
+// it another.
 func (s *State) SetPendingResume(taskID, sessionID, providerID string) {
-	s.PendingResumes[taskID] = PendingResume{SessionID: sessionID, ProviderID: providerID}
+	next := PendingResume{SessionID: sessionID, ProviderID: providerID}
+	if prev, ok := s.PendingResumes[taskID]; ok {
+		next.InterruptedRun = prev.InterruptedRun
+	}
+	s.PendingResumes[taskID] = next
+}
+
+// SetInterruptedResume records that a task should continue the session a
+// DispatchQ shutdown or crash cut off (see PendingResume.AfterInterrupt).
+func (s *State) SetInterruptedResume(taskID, sessionID, providerID, runID string) {
+	s.PendingResumes[taskID] = PendingResume{
+		SessionID: sessionID, ProviderID: providerID, AfterInterrupt: true, InterruptedRun: runID,
+	}
 }
 
 // ClearPendingResume clears any pending resume for a task.
@@ -336,6 +394,7 @@ func (s *State) ClearPendingResume(taskID string) { delete(s.PendingResumes, tas
 // same id starts from a clean slate instead of inheriting a dead task's
 // scheduling history.
 func (s *State) ForgetTask(taskID string) {
+	delete(s.RemovalOwed, taskID)
 	delete(s.LastStarted, taskID)
 	delete(s.LastRunAt, taskID)
 	delete(s.CompletedOnce, taskID)

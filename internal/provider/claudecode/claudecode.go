@@ -245,7 +245,13 @@ func (p *parser) Parse(line []byte) []provider.Event {
 	if err := json.Unmarshal(line, &ev); err != nil {
 		return nil // non-JSON or partial line: nothing to classify
 	}
+	return p.events(ev)
+}
 
+// events classifies one decoded stream event. It is Parse after decoding, so
+// an event built from another source (a session transcript, see session.go)
+// is judged by the very same rules.
+func (p *parser) events(ev streamEvent) []provider.Event {
 	// Remember rate-limit timing wherever it appears, including on an
 	// approaching-limit event that does not itself reject the request: when a
 	// later event does, this is the window it is waiting for.

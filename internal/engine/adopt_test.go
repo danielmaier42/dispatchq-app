@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -168,19 +169,28 @@ func TestRecoverTakesBackRunThatOutlivedTheDaemon(t *testing.T) {
 	procs.exit(41315)
 	e.WaitIdle()
 	run = latestRun(t, st, "run-1")
-	if run.Status != store.StatusFailed || run.Error != adoptedEndMessage || run.FinishedAt == nil || run.PID != 0 {
+	if run.Status != store.StatusFailed || !strings.HasPrefix(run.Error, adoptedEndMessage) || run.FinishedAt == nil || run.PID != 0 {
 		t.Fatalf("finished run = %+v, want failed with the unknown-outcome reason and no PID", run)
 	}
 	assertNoSlots(t, e)
 	if s, _ := st.LoadState(); len(s.LiveRuns) != 0 {
 		t.Fatalf("live runs after the end = %v, want none", s.LiveRuns)
 	}
+	// Nothing says how it ended, so it counts as cut off: the one-shot
+	// continues its session once rather than starting over.
 	if err := e.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	e.WaitIdle()
-	if n := len(second.requests()); n != 0 {
-		t.Fatalf("one-shot task ran again after its taken-back run ended (%d runs)", n)
+	if reqs := second.requests(); len(reqs) != 1 || !reqs[0].Resume || reqs[0].SessionID != "sess-1" {
+		t.Fatalf("runs after the taken-back run ended = %+v, want one continuing sess-1", reqs)
+	}
+	if err := e.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	e.WaitIdle()
+	if n := len(second.requests()); n != 1 {
+		t.Fatalf("one-shot task ran again after its continuation ended (%d runs)", n)
 	}
 }
 
@@ -291,7 +301,7 @@ func TestRecoverMarksGoneRunInterrupted(t *testing.T) {
 	if len(adopted) != 0 || interrupted != 1 {
 		t.Fatalf("adopted %d, interrupted %d; want 0 and 1", len(adopted), interrupted)
 	}
-	if run := latestRun(t, st, "run-1"); run.Status != store.StatusFailed || run.Error != store.InterruptedError {
+	if run := latestRun(t, st, "run-1"); run.Status != store.StatusFailed || !strings.HasPrefix(run.Error, store.InterruptedError) {
 		t.Fatalf("run = %+v, want interrupted", run)
 	}
 	if s, _ := st.LoadState(); len(s.LiveRuns) != 0 {

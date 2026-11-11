@@ -453,15 +453,41 @@ explains it.
 **Unattended by design**
 
 - **Hung runs are killed** after a configurable idle timeout, whole process
-  group included. Runs left without a process after a crash or power loss are
-  marked interrupted.
+  group included.
+- **Runs cut off by a restart are recorded and notified.** A run whose process
+  ended while no daemon watched it (a crash, a power loss, an update that killed
+  the daemon) gets its outcome at the next start: the one its session transcript
+  shows when the turn had ended (Claude Code), otherwise *failed* as
+  interrupted. A turn that ended on an API error is read the way a live run's
+  is: a usage limit pauses the provider until the window the error names and the
+  session resumes then, a login problem is recorded as `auth_error`, any other
+  error as *failed*. This holds for quiet-history runs too, which have no
+  history row until they end; such a run is recorded as a normal, visible row,
+  not a hidden quiet one. It is notified like any other failure, and the daemon
+  log names each run (`run … ended while no daemon watched it`).
+- **An interrupted one-shot continues once.** When DispatchQ itself cuts off a
+  one-shot task's run (the 30-second shutdown grace runs out, the daemon dies
+  under it, or a run taken back after a restart ends without a readable
+  outcome), the task is not retired half done and not started over:
+  its next run continues the same session, so the model sees what it already
+  did. It is not handed the task's prompt again but told that it was cut off,
+  to check what is already done and finish only what is missing. The run's
+  reason says so, and so does a note in the next run's log. A limit that
+  pauses the continuation turns it into an ordinary limit resume. Cut off a
+  second time, even after such a pause, the task is retired. A
+  task deleted meanwhile is not continued.
+  Recurring tasks start their next occurrence fresh as before, and scripts
+  are not continued.
 - **Runs survive a daemon restart.** A run's process does not stop when the
   daemon does (an update, a crash). The next daemon takes the run back: it
   shows as *running* with its process id, its task is not started a second
-  time, *Cancel* and *Continue in Terminal* stop it, and when it ends it is
+  time, *Cancel* and *Continue in Terminal* stop it. When it ends, its
+  outcome and answer are read from its session transcript (Claude Code);
+  where that cannot tell (another harness, a turn that had not ended), it is
   recorded as *failed* with the reason that its exit status and the output
-  written after the restart could not be captured; its session holds the
-  result. The daemon log says `took back run …`. A run an older version
+  written after the restart could not be captured, and a one-shot task
+  continues its session once, as above. The daemon log says
+  `took back run …`. A run an older version
   already wrote off as interrupted is taken back the same way when its headless
   harness is still running with that session (Claude Code, within seven days).
   The idle timeout does not apply to a run taken back.
@@ -476,6 +502,15 @@ explains it.
   edit, so macOS asks for Documents access while you are present.
 - **Bounded history.** Old runs are pruned to a configurable count; an unread
   failure stays until you have read it.
+- **No run record is lost to a bad moment on disk.** A write to history, or the
+  write that takes a finished one-shot task out of the queue, is tried again
+  for a few seconds before it counts as failed. A run record history still
+  refuses is kept in `runs/<run-id>.pending.json`, written to history ahead of
+  the next record, and at the latest at the next daemon start (`wrote N run
+  record(s) to history …` in the daemon log). A one-shot task whose removal from
+  the queue failed after it ran is taken out of it at the next start
+  (`removed task … from the queue` in the daemon log), unless a run of it is
+  still going or its session waits to continue.
 
 **Seeing what happened**
 
@@ -2156,10 +2191,12 @@ that.
   due and start right after it; their *waiting* badge says why. Backfill tasks
   never get this turn.
 - **A one-time task runs once.** An *asap* or *earliest start* task leaves the
-  queue when it has run. If one is still listed after it ran, the Queue marks it
-  *already ran* and the Dashboard's **Up next** leaves it out: the scheduler does
-  not start it again. **Run now** runs it by hand; deleting it clears the mark, so
-  a task added later under the same id runs normally.
+  queue when it has run. If the write that removes it fails, the next daemon
+  start removes it. One that is still listed after it ran for another reason
+  (written back into `config.toml` by hand under its old id) stays: the Queue
+  marks it *already ran* and the Dashboard's **Up next** leaves it out, and the
+  scheduler does not start it again. **Run now** runs it by hand; deleting it
+  clears the mark, so a task added later under the same id runs normally.
 - **The pause switch wins over everything.** While *Pause all runs* is on, a tick
   starts nothing and records nothing, `dispatchq run-now` and the app's **Run now**
   are refused, and no task wake is registered (only the heartbeat stays, so the
@@ -2266,7 +2303,11 @@ are tried for 24 hours, the macOS banner for 1 hour; past that the daemon
 writes `NOTIFICATION LOST: …` to `dispatchqd.err.log`. A refusal that would
 repeat (a revoked token, a deleted topic: an HTTP 4xx other than 408 or 429)
 is logged and not retried, and a delivery to a channel you switched off is
-dropped. The Notifications view has every notification either way.
+dropped. The Notifications view has every notification either way. When
+`config.toml` cannot be read at the moment a notification goes out (a full
+disk, a system out of file handles), it goes to the channels the settings read
+last name, not to the desktop alone, and nothing queued is dropped as switched
+off; the daemon log says so.
 
 ## Data on disk
 
@@ -2279,13 +2320,14 @@ environment variable):
 | `config.toml` | Global settings, the configured [providers](#providers) and [pools](#provider-pools), and the ordered task list — the order is the priority, and tasks of one group sit together in it (human-readable, versionable). No credentials: a provider entry holds its CLI's path and configuration directory, never what is inside them. |
 | `history.jsonl` | Append-only index of every run, pruned to *Keep run history*; unread runs that did not succeed are never pruned. A quiet-history task's successful runs carry `"quiet": true` and are dropped after 48 hours (at most 200 per task are kept). Scripts read it through `dispatchq status --all --json`, which leaves those out unless `--hidden` is given. |
 | `runs/<run-id>.log` | Full log for each run; a hidden run's log is deleted with it. |
+| `runs/<run-id>.pending.json` | Only after a failed write: a run's record that history did not take yet. The daemon writes it to history at the next chance and removes the file. |
 | `artifacts.json` | Index of published artifacts (title, source task/run, its group and parent job, file name, size, type). |
 | `artifacts/<id>/<file>` | The published files themselves (snapshots copied at publish time). |
 | `notifications.json` | Outbox of notifications sent with `dispatchq notify`, waiting for the daemon to deliver them (normally empty). |
 | `inbox.json` | The last 1000 notifications the daemon sent (title, message, kind, what each points at, read flag), as listed in the Notifications view. An unread failure notification is kept until it is read, however old. |
 | `deliveries.json` | Notifications a channel has not taken yet (which channel, how often tried, when next, the last error), retried for up to a day (normally absent). See [When DispatchQ notifies](#when-dispatchq-notifies). |
 | `failing.json` | Tasks failing right now: since when, how often, and the Notifications row that counts it (normally absent). |
-| `state.json` | Machine bookkeeping: read/unread flags (runs and artifacts), which artifacts have been notified about, cron anchors, pending-resume sessions, the process of each run in flight (so a restarted daemon can take it back), the provider health you were last told about, the latest credit proof of each API-key account (ping or run, answered or refused), which queue groups are folded shut, dismissed update version, the What's new edition you closed, whether the check for tasks that still use the 1.x names is done. |
+| `state.json` | Machine bookkeeping: read/unread flags (runs and artifacts), which artifacts have been notified about, cron anchors, pending-resume sessions (including one a DispatchQ restart cut off), one-shot tasks whose removal from the queue is still owed, the process of each run in flight (so a restarted daemon can take it back), the provider health you were last told about, the latest credit proof of each API-key account (ping or run, answered or refused), which queue groups are folded shut, dismissed update version, the What's new edition you closed, whether the check for tasks that still use the 1.x names is done. |
 | `dispatchqd.out.log` / `dispatchqd.err.log` | Daemon stdout/stderr on macOS; on Windows the daemon log is `dispatchqd.log`. Every line the daemon prints starts with its local time (RFC 3339, e.g. `2026-11-11T17:05:09+01:00`); a Go crash trace is written as it is. |
 | `../claudeq` | After an update from a 1.x version: a link from the old data folder to this one. |
 | `.lock` / `.daemon.lock` | Lock files, both empty of interest. `.lock` serializes config/state writes between the daemon and a `dispatchq` command; `.daemon.lock` holds the running daemon's pid and is what makes a second daemon on the same store refuse to start. Both are released when the holding process exits, so neither needs clearing by hand. |

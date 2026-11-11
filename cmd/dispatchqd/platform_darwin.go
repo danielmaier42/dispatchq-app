@@ -33,6 +33,7 @@ func newPlatform(r system.Runner) platform {
 		requestNotifyAuth: notify.RequestMacAuthorization,
 		notifyStatus:      notify.MacAuthorization,
 		chooseFolder:      api.OSAScriptFolderChooser(r),
+		chooseFile:        api.OSAScriptFileChooser(r),
 		saveFile:          api.OSAScriptSaveFileDialog(r),
 		openTerminal:      api.OSAScriptTerminalOpener(r),
 		warmFileAccess:    warmFileAccess,

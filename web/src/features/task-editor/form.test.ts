@@ -2,6 +2,7 @@ import {describe, expect, it} from 'vitest'
 import type {Task} from '@/lib/types'
 import {
   buildPayload,
+  FIELD_ORDER,
   carriedFields,
   fieldForError,
   formFromTask,
@@ -138,4 +139,44 @@ describe('fieldForError', () => {
     ['invalid group: at most 60 characters', 'group'],
     ['disk full', null],
   ])('%s', (msg, field) => expect(fieldForError(msg)).toBe(field))
+})
+
+describe('source file', () => {
+  it('opens a file job on its file, not on what a run read from it', () => {
+    const f = formFromTask({...task, prompt: 'what one run read', source_file: '/briefs/nightly.md'})
+    expect(f.source).toBe('file')
+    expect(f.sourceFile).toBe('/briefs/nightly.md')
+    expect(f.prompt).toBe('')
+    expect(formFromTask(task).source).toBe('inline')
+  })
+  it('sends only the chosen source', () => {
+    const f = {...formFromTask(task), source: 'file' as const, sourceFile: ' /briefs/nightly.md '}
+    const p = buildPayload(f, {takesEffort: true})
+    expect(p.source_file).toBe('/briefs/nightly.md')
+    expect(p.prompt).toBe('')
+    const back = buildPayload({...f, source: 'inline'}, {takesEffort: true})
+    expect(back.source_file).toBeUndefined()
+    expect(back.prompt).toBe('Build it')
+  })
+  it('asks for a full path to the file', () => {
+    const f = {...formFromTask({kind: 'script'}), source: 'file' as const}
+    expect(validate(f).sourceFile).toMatch(/script file/)
+    expect(validate(f).prompt).toBeUndefined()
+    expect(validate({...f, sourceFile: 'watch.sh'}).sourceFile).toMatch(/full path/)
+    expect(validate({...f, sourceFile: '/scripts/watch.sh'}).sourceFile).toBeUndefined()
+    expect(validate({...f, sourceFile: 'C:\\scripts\\watch.ps1'}).sourceFile).toBeUndefined()
+  })
+  it('files a source_file refusal under the file field', () => {
+    expect(fieldForError('invalid task: source_file "x" must be an absolute path')).toBe('sourceFile')
+  })
+})
+
+describe('FIELD_ORDER', () => {
+  it('holds every field validate complains about, so none is skipped on save', () => {
+    const bad = [
+      {...formFromTask({}), trigger: 'fixed' as const, group: 'x'.repeat(61)},
+      {...formFromTask({}), source: 'file' as const, sourceFile: 'relative.md'},
+    ]
+    for (const f of bad) for (const k of Object.keys(validate(f))) expect(FIELD_ORDER).toContain(k)
+  })
 })

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/danielmaier42/claudeq/internal/system"
 )
@@ -22,6 +23,24 @@ func OSAScriptFolderChooser(r system.Runner) FolderChooser {
 			expr += fmt.Sprintf(` default location (POSIX file %q)`, loc)
 		}
 		return chooseWithOSAScript(ctx, r, "choose folder", "-e", "POSIX path of ("+expr+")")
+	}
+}
+
+// OSAScriptFileChooser returns a FileChooser that opens the native macOS "open
+// file" panel via `osascript`. Like `choose folder`, `choose file` shows
+// nothing when its default location is gone, so it starts at the nearest
+// existing folder of start. The prompt and that folder reach the AppleScript
+// as run arguments, so they need no AppleScript string escaping.
+func OSAScriptFileChooser(r system.Runner) FileChooser {
+	return func(ctx context.Context, prompt, start string) (string, bool, error) {
+		return chooseWithOSAScript(ctx, r, "choose file",
+			"-e", "on run argv",
+			"-e", `if (item 2 of argv) is "" then`,
+			"-e", "return POSIX path of (choose file with prompt (item 1 of argv))",
+			"-e", "end if",
+			"-e", "return POSIX path of (choose file with prompt (item 1 of argv) default location (POSIX file (item 2 of argv)))",
+			"-e", "end run",
+			prompt, existingDir(start))
 	}
 }
 
@@ -44,6 +63,11 @@ func OSAScriptSaveFileDialog(r system.Runner) SaveFileDialog {
 // error; what is the dialog's name for error messages.
 func chooseWithOSAScript(ctx context.Context, r system.Runner, what string, args ...string) (string, bool, error) {
 	out, err := system.ShowingWindows(r).Run(ctx, "osascript", args...)
+	// A dialog left open past the time limit was killed: that is no answer,
+	// not a broken dialog, and saying "unavailable" would mislead.
+	if ctx.Err() != nil {
+		return "", false, fmt.Errorf("osascript %s: no answer in time: %w", what, ctx.Err())
+	}
 	text := strings.TrimSpace(string(out))
 	if err != nil {
 		if strings.Contains(text, "-128") || strings.Contains(strings.ToLower(text), "cancel") {
@@ -70,8 +94,9 @@ func existingDir(start string) string {
 			switch {
 			case err == nil && fi.IsDir():
 				return p
-			case err == nil, errors.Is(err, fs.ErrNotExist):
-				// A file (use its folder) or a gone path: try the parent.
+			case err == nil, errors.Is(err, fs.ErrNotExist), errors.Is(err, syscall.ENOTDIR):
+				// A file (use its folder), a gone path, or one that runs
+				// through a file: try the parent.
 			default:
 				// Unreadable for the daemon (e.g. a TCC-protected folder) does
 				// not mean gone — the dialog has its own access, so keep it.

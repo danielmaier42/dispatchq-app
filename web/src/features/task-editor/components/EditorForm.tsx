@@ -11,6 +11,7 @@ import {invalidate, keys, usePools, useProviders} from '@/lib/queries'
 import type {Task, TaskKind} from '@/lib/types'
 import {
   buildPayload,
+  FIELD_ORDER,
   fieldForError,
   poolOf,
   validate,
@@ -31,9 +32,6 @@ import {HowSection} from './HowSection'
 import {PromptSection, WhatSection} from './WhatSection'
 import {WhenSection} from './WhenSection'
 import {WhereSection} from './WhereSection'
-
-// The order the fields appear in, so the first complaint is the one in view.
-const FIELD_ORDER: FieldKey[] = ['name', 'group', 'fixedAt', 'cron', 'prompt', 'workingDir', 'target']
 
 // The reason stays on the field itself; the field is scrolled into view and
 // focused, rather than the reason repeated at the footer.

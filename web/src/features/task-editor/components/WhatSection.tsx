@@ -1,11 +1,12 @@
-import {Bot, FileCode, FileText, MessageSquareText, Terminal} from 'lucide-react'
+import {Bot, File, FileCode, FileText, MessageSquareText, PenLine, Terminal} from 'lucide-react'
 import {Field} from '@/components/ui/field'
 import {Input, Textarea} from '@/components/ui/input'
 import {Segmented} from '@/components/ui/segmented'
-import type {TaskKind} from '@/lib/types'
+import type {TaskKind, TaskSource} from '@/lib/types'
 import type {FieldErrors, TaskForm} from '../form'
 import {PromptReview} from '../review/PromptReview'
 import {GroupCombobox} from './GroupCombobox'
+import {SourceFileField} from './SourceFileField'
 import {EditorSection} from './parts'
 
 const mono = 'font-mono text-[12.5px]'
@@ -94,8 +95,43 @@ export function PromptSection({
   freshReview: boolean
 }) {
   const script = form.kind === 'script'
+  const fromFile = form.source === 'file'
+  const noun = script ? 'script' : 'prompt'
   return (
-    <EditorSection icon={script ? FileCode : MessageSquareText} title={script ? 'Script' : 'Prompt'}>
+    <EditorSection
+      icon={script ? FileCode : MessageSquareText}
+      title={script ? 'Script' : 'Prompt'}
+      aside={
+        <Segmented<TaskSource>
+          size="sm"
+          aria-label={script ? 'Script source' : 'Prompt source'}
+          value={form.source}
+          onValueChange={(source) => update({source})}
+          options={[
+            {
+              value: 'inline',
+              label: (
+                <>
+                  <PenLine />
+                  Inline
+                </>
+              ),
+              tip: `The ${noun} is written here and stored with the task.`,
+            },
+            {
+              value: 'file',
+              label: (
+                <>
+                  <File />
+                  File
+                </>
+              ),
+              tip: `The ${noun} stays in a file of yours and is read at the start of every run.`,
+            },
+          ]}
+        />
+      }
+    >
       {script && (
         <p className="rounded-md bg-surface-2 px-3 py-2 text-[12px] leading-relaxed text-muted-foreground">
           Runs without a model: no provider, no usage, and a rate limit never holds it up. Start it with a
@@ -105,26 +141,37 @@ export function PromptSection({
           jobs with <code className={mono}>"$DISPATCHQ_BIN" queue --prompt …</code>.
         </p>
       )}
-      <Field htmlFor="te-prompt" error={errors.prompt}>
-        <Textarea
-          id="te-prompt"
-          aria-label={script ? 'Script' : 'Prompt'}
-          value={form.prompt}
-          aria-invalid={!!errors.prompt}
-          spellCheck={!script}
-          placeholder={script ? '#!/bin/zsh\n\ncurl -s …' : 'What should Claude do?'}
-          className={`${mono} min-h-[220px] leading-relaxed`}
-          onChange={(e) => update({prompt: e.target.value})}
+      {fromFile ? (
+        <SourceFileField
+          kind={form.kind}
+          value={form.sourceFile}
+          error={errors.sourceFile}
+          onChange={(sourceFile) => update({sourceFile})}
         />
-      </Field>
-      <PromptReview
-        kind={script ? 'script' : 'task'}
-        prompt={form.prompt}
-        workingDir={form.workingDir}
-        fresh={freshReview}
-        onApply={(revised) => update({prompt: revised})}
-        className="-mt-1"
-      />
+      ) : (
+        <>
+          <Field htmlFor="te-prompt" error={errors.prompt}>
+            <Textarea
+              id="te-prompt"
+              aria-label={script ? 'Script' : 'Prompt'}
+              value={form.prompt}
+              aria-invalid={!!errors.prompt}
+              spellCheck={!script}
+              placeholder={script ? '#!/bin/zsh\n\ncurl -s …' : 'What should Claude do?'}
+              className={`${mono} min-h-[220px] leading-relaxed`}
+              onChange={(e) => update({prompt: e.target.value})}
+            />
+          </Field>
+          <PromptReview
+            kind={script ? 'script' : 'task'}
+            prompt={form.prompt}
+            workingDir={form.workingDir}
+            fresh={freshReview}
+            onApply={(revised) => update({prompt: revised})}
+            className="-mt-1"
+          />
+        </>
+      )}
     </EditorSection>
   )
 }

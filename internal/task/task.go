@@ -4,6 +4,10 @@ package task
 import (
 	"errors"
 	"fmt"
+	"io"
+	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode"
@@ -69,6 +73,13 @@ type Task struct {
 	// script itself. One field, because it is the same thing from the queue's
 	// point of view: the text that says what this job does.
 	Prompt string `toml:"prompt" json:"prompt"`
+	// SourceFile, when set, replaces the inline Prompt with a file: the prompt
+	// (or, for a script job, the script) is read from this absolute path at the
+	// start of every run, so the job always runs what the file says now. A job
+	// has one or the other, never both. A file that cannot be read fails the
+	// run with the reason; it is not checked when the job is filed, because a
+	// job earlier in the chain may well be what writes it.
+	SourceFile string `toml:"source_file,omitempty" json:"source_file,omitempty"`
 	// WorkingDir is the directory Claude Code runs in (the task's context).
 	WorkingDir string `toml:"working_dir" json:"working_dir"`
 	// Group is the free-text folder the queue shows this task under. Empty means
@@ -188,12 +199,8 @@ func (t Task) Validate() error {
 	if t.ID == "" {
 		return fmt.Errorf("%w: missing id", ErrInvalidTask)
 	}
-	if t.Prompt == "" {
-		what := "prompt"
-		if t.IsScript() {
-			what = "script"
-		}
-		return fmt.Errorf("%w: missing %s", ErrInvalidTask, what)
+	if err := t.checkSource(); err != nil {
+		return err
 	}
 	if t.WorkingDir == "" {
 		return fmt.Errorf("%w: missing working_dir", ErrInvalidTask)
@@ -247,6 +254,77 @@ func (t Task) Validate() error {
 	}
 
 	return nil
+}
+
+// noun is what the job's text is called: a script or a prompt.
+func (t Task) noun() string {
+	if t.IsScript() {
+		return "script"
+	}
+	return "prompt"
+}
+
+// checkSource validates where the job's text comes from: inline, or a file
+// named by an absolute path. A relative path would resolve against whatever
+// directory the daemon happens to run in, which is never what was meant.
+func (t Task) checkSource() error {
+	if t.SourceFile == "" {
+		if t.Prompt == "" {
+			return fmt.Errorf("%w: missing %s", ErrInvalidTask, t.noun())
+		}
+		return nil
+	}
+	if t.Prompt != "" {
+		return fmt.Errorf("%w: a job takes its %s inline or from a source_file, not both", ErrInvalidTask, t.noun())
+	}
+	if !filepath.IsAbs(t.SourceFile) {
+		return fmt.Errorf("%w: source_file %q must be an absolute path", ErrInvalidTask, t.SourceFile)
+	}
+	return nil
+}
+
+// MaxSourceFileSize is the largest prompt or script file a run reads. A
+// prompt file is prose and a script file a program; anything this large is
+// almost certainly the wrong file. It is a sanity bound, not the command-line
+// limit: a prompt passed as an argument still has to fit the system's, exactly
+// as an inline one does.
+const MaxSourceFileSize = 1 << 20
+
+// ReadSource returns the text this run executes: the inline prompt, or the
+// current content of the source file. Every failure names the file and says
+// what is wrong with it, because the message is what the failed run shows.
+func (t Task) ReadSource() (string, error) {
+	if t.SourceFile == "" {
+		return t.Prompt, nil
+	}
+	// Only a regular file is opened: opening a named pipe would block until
+	// something writes to it, and the read happens while the scheduler waits.
+	info, err := os.Stat(t.SourceFile)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", fmt.Errorf("%s file %s does not exist", t.noun(), t.SourceFile)
+		}
+		return "", fmt.Errorf("read %s file: %w", t.noun(), err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("%s file %s is not a regular file", t.noun(), t.SourceFile)
+	}
+	f, err := os.Open(t.SourceFile)
+	if err != nil {
+		return "", fmt.Errorf("read %s file: %w", t.noun(), err)
+	}
+	defer func() { _ = f.Close() }()
+	data, err := io.ReadAll(io.LimitReader(f, MaxSourceFileSize+1))
+	if err != nil {
+		return "", fmt.Errorf("read %s file %s: %w", t.noun(), t.SourceFile, err)
+	}
+	if len(data) > MaxSourceFileSize {
+		return "", fmt.Errorf("%s file %s is larger than %d bytes", t.noun(), t.SourceFile, MaxSourceFileSize)
+	}
+	if strings.TrimSpace(string(data)) == "" {
+		return "", fmt.Errorf("%s file %s is empty", t.noun(), t.SourceFile)
+	}
+	return string(data), nil
 }
 
 // checkKind validates the job kind and the settings that only one of the two

@@ -34,9 +34,10 @@ type platform struct {
 	requestNotifyAuth func()
 	// notifyStatus reports whether the system shows this app's notifications.
 	notifyStatus func() string
-	// chooseFolder, saveFile and openTerminal are the native dialogs and the
+	// chooseFolder, chooseFile, saveFile and openTerminal are the native dialogs and the
 	// terminal window the dashboard opens on the operator's screen.
 	chooseFolder api.FolderChooser
+	chooseFile   api.FileChooser
 	saveFile     api.SaveFileDialog
 	openTerminal api.TerminalOpener
 	// warmFileAccess raises the system's file-access consent prompts for the

@@ -296,7 +296,11 @@ func (s *StoreSource) lookupTask(id string) string {
 	if t.IsScript() {
 		what = "Script"
 	}
-	fmt.Fprintf(&b, "%s:\n%s\n", what, clip(t.Prompt, 4000))
+	if t.SourceFile != "" {
+		fmt.Fprintf(&b, "%s: read from %s at the start of every run\n", what, t.SourceFile)
+	} else {
+		fmt.Fprintf(&b, "%s:\n%s\n", what, clip(t.Prompt, 4000))
+	}
 	if runs, err := visibleRuns(s.Store); err == nil {
 		var mine []store.Run
 		for _, r := range runs {
@@ -819,6 +823,7 @@ func (d *TaskDraft) applyTo(t *task.Task, cfg store.Config, loc *time.Location) 
 	}
 	if strings.TrimSpace(d.Prompt) != "" {
 		t.Prompt = d.Prompt
+		t.SourceFile = "" // new text replaces a file the job read from
 	}
 	if d.WorkingDir != "" {
 		t.WorkingDir = d.WorkingDir

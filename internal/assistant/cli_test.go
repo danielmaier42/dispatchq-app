@@ -54,6 +54,7 @@ var taskFlagFields = map[string]string{
 	"quiet-history": "quiet_history", "backfill": "backfill", "enabled": "enabled",
 	"depends-on": "depends_on", "include-results": "include_results",
 	"prompt-file": "prompt",   // the assistant writes the text itself
+	"source-file": "",         // the assistant drafts text; pointing a job at a file is the form's or the CLI's
 	"in":          "fixed_at", // counted from now
 	"json":        "",         // output format only
 }

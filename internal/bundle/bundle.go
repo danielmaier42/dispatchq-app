@@ -159,6 +159,8 @@ func Read(data []byte) (task.Task, ProviderHint, error) {
 	t := env.Task.Task
 	t.Prompt = string(prompt)
 	t.Provider, t.Pool = "", "" // see Write: both ids are local to the machine that exported
+	// A path names a file on the exporter's machine; the text travels instead.
+	t.SourceFile = ""
 	return t, env.Provider, nil
 }
 

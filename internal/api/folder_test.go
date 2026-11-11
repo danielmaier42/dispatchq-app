@@ -102,3 +102,49 @@ func TestOSAScriptFolderChooserError(t *testing.T) {
 		t.Fatalf("error should carry osascript output, got: %v", err)
 	}
 }
+
+func TestOSAScriptFileChooserStartsInTheFilesFolder(t *testing.T) {
+	dir := t.TempDir()
+	gone := filepath.Join(dir, "scripts", "watch.sh") // the folder is gone too
+	fr := &fakeRunner{out: []byte(filepath.Join(dir, "new.sh") + "\n")}
+	path, chosen, err := OSAScriptFileChooser(fr)(context.Background(), "Select the script file", gone)
+	if err != nil || !chosen || path != filepath.Join(dir, "new.sh") {
+		t.Fatalf("chooser = (%q, %v, %v)", path, chosen, err)
+	}
+	n := len(fr.args)
+	if n < 2 || fr.args[n-2] != "Select the script file" || fr.args[n-1] != dir {
+		t.Fatalf("run arguments = %q, want the prompt and the nearest existing folder", fr.args)
+	}
+	if !strings.Contains(strings.Join(fr.args, " "), "choose file with prompt") {
+		t.Fatalf("script does not open a file dialog: %q", fr.args)
+	}
+}
+
+func TestOSAScriptFileChooserCancel(t *testing.T) {
+	fr := &fakeRunner{out: []byte("execution error: User canceled. (-128)"), err: errors.New("exit status 1")}
+	path, chosen, err := OSAScriptFileChooser(fr)(context.Background(), "p", "")
+	if err != nil || chosen || path != "" {
+		t.Fatalf("cancel = (%q, %v, %v), want nothing chosen and no error", path, chosen, err)
+	}
+}
+
+func TestExistingDirWalksUpFromAPathThroughAFile(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "watch.sh")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := existingDir(filepath.Join(file, "old")); got != dir {
+		t.Fatalf("existingDir = %q, want %q: a path through a file does not exist", got, dir)
+	}
+}
+
+func TestOSAScriptDialogTimeoutIsNoAnswer(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	fr := &fakeRunner{err: errors.New("signal: killed")}
+	_, chosen, err := OSAScriptFileChooser(fr)(ctx, "p", "")
+	if chosen || err == nil || !strings.Contains(err.Error(), "no answer in time") {
+		t.Fatalf("timed-out dialog = (%v, %v), want a no-answer error", chosen, err)
+	}
+}

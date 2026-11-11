@@ -1,5 +1,5 @@
 import {pad2} from '@/lib/format'
-import type {Task, TaskInput, TaskKind, TaskTrigger} from '@/lib/types'
+import type {Task, TaskInput, TaskKind, TaskSource, TaskTrigger} from '@/lib/types'
 
 // TaskForm is what the editor edits: every field as the controls hold it. The
 // provider and the pool share one choice ("pool:ID" for a pool), because a task
@@ -9,7 +9,12 @@ export interface TaskForm {
   // The queue section the task sits in; "" is none.
   group: string
   kind: TaskKind
+  // Inline keeps the text in prompt; file names the file it is read from on
+  // every run. Both values are kept while the editor is open, so switching
+  // back and forth loses nothing; only the chosen one is sent.
+  source: TaskSource
   prompt: string
+  sourceFile: string
   workingDir: string
   trigger: TaskTrigger
   // datetime-local text ("2026-10-19T20:00"), local time.
@@ -25,8 +30,23 @@ export interface TaskForm {
   backfill: boolean
 }
 
-export type FieldKey = 'name' | 'group' | 'prompt' | 'workingDir' | 'fixedAt' | 'cron' | 'target'
+export type FieldKey =
+  'name' | 'group' | 'prompt' | 'sourceFile' | 'workingDir' | 'fixedAt' | 'cron' | 'target'
 export type FieldErrors = Partial<Record<FieldKey, string>>
+
+// The order the fields appear in the editor, so the first complaint is the one
+// in view. Every field validate can complain about must be here: one that is
+// missing lets the form go to the daemon with the problem unreported.
+export const FIELD_ORDER: FieldKey[] = [
+  'name',
+  'group',
+  'fixedAt',
+  'cron',
+  'prompt',
+  'sourceFile',
+  'workingDir',
+  'target',
+]
 
 // The daemon's limit (task.MaxGroupLen): a group name is a section header.
 export const MAX_GROUP_LEN = 60
@@ -47,7 +67,11 @@ export function formFromTask(t: Partial<Task>): TaskForm {
     name: t.name ?? '',
     group: t.group ?? '',
     kind: t.kind === 'script' ? 'script' : 'agent',
-    prompt: t.prompt ?? '',
+    source: t.source_file ? 'file' : 'inline',
+    // A run snapshot of a file job carries what that run read as its prompt;
+    // the job itself has none, so the file is what the editor edits.
+    prompt: t.source_file ? '' : (t.prompt ?? ''),
+    sourceFile: t.source_file ?? '',
     workingDir: t.working_dir ?? '',
     trigger,
     fixedAt: trigger === 'fixed' && t.fixed_at ? toLocalDT(t.fixed_at) : '',
@@ -86,12 +110,24 @@ export function withTrigger(f: TaskForm, trigger: TaskTrigger): TaskForm {
   return trigger === 'cron' && !f.cron.trim() ? {...f, trigger, cron: DEFAULT_CRON} : {...f, trigger}
 }
 
+// isAbsolutePath mirrors the daemon's check: a POSIX path from the root, or a
+// Windows drive or UNC path. A relative path would resolve against wherever the
+// daemon happens to run.
+export function isAbsolutePath(p: string): boolean {
+  return p.startsWith('/') || /^[A-Za-z]:[\\/]/.test(p) || p.startsWith('\\\\')
+}
+
 // validate catches what the daemon would refuse anyway, so the reason lands on
 // the field instead of arriving as one line from the server. The cron
 // expression is judged by the daemon itself (useCronCheck), not here.
 export function validate(f: TaskForm): FieldErrors {
   const e: FieldErrors = {}
-  if (!f.prompt.trim())
+  if (f.source === 'file') {
+    const p = f.sourceFile.trim()
+    if (!p)
+      e.sourceFile = f.kind === 'script' ? 'Name the script file to run.' : 'Name the prompt file to read.'
+    else if (!isAbsolutePath(p)) e.sourceFile = 'Use the full path, starting with / (or a drive on Windows).'
+  } else if (!f.prompt.trim())
     e.prompt = f.kind === 'script' ? 'Write the script to run.' : 'Tell Claude what to do.'
   if ([...f.group.trim()].length > MAX_GROUP_LEN) e.group = `At most ${MAX_GROUP_LEN} characters.`
   if (!f.workingDir.trim()) e.workingDir = 'Please choose a working directory.'
@@ -135,7 +171,8 @@ export function buildPayload(
     name: f.name.trim(),
     group: opts.keptGroup !== undefined && group === opts.keptGroup ? undefined : group,
     kind: script ? 'script' : undefined,
-    prompt: f.prompt,
+    prompt: f.source === 'file' ? '' : f.prompt,
+    source_file: f.source === 'file' ? f.sourceFile.trim() : undefined,
     working_dir: f.workingDir.trim(),
     trigger: f.trigger,
     fixed_at: f.trigger === 'fixed' && f.fixedAt ? new Date(f.fixedAt).toISOString() : undefined,
@@ -156,6 +193,7 @@ export function buildPayload(
 // so it shows where the fix is. Anything else stays a message for the footer.
 export function fieldForError(message: string): FieldKey | null {
   const m = message.toLowerCase()
+  if (m.includes('source_file')) return 'sourceFile'
   if (/missing (prompt|script)/.test(m)) return 'prompt'
   if (m.includes('invalid group')) return 'group'
   if (m.includes('working_dir') || m.includes('working directory')) return 'workingDir'

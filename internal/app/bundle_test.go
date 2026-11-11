@@ -336,3 +336,43 @@ func TestImportOfAHintlessBundleChangesNothing(t *testing.T) {
 		t.Fatalf("draft = %+v, want the task untouched", d.Task)
 	}
 }
+
+func TestExportInlinesTheSourceFile(t *testing.T) {
+	src, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	brief := filepath.Join(t.TempDir(), "brief.md")
+	if err := os.WriteFile(brief, []byte("Sweep the backlog.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	orig := task.Task{
+		ID: "nightly", Name: "Nightly sweep", SourceFile: brief, WorkingDir: "/repo",
+		Trigger: task.TriggerASAP, Enabled: true, Permissions: task.PermissionsDefault,
+	}
+	if err := AddTask(src, orig); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	exported, err := ExportTask(src, "nightly", &buf, time.Now())
+	if err != nil {
+		t.Fatalf("ExportTask: %v", err)
+	}
+	if exported.SourceFile != "" || exported.Prompt != "Sweep the backlog.\n" {
+		t.Fatalf("exported %+v, want the file's text inline and no path", exported)
+	}
+	read, _, err := bundle.Read(buf.Bytes())
+	if err != nil {
+		t.Fatalf("bundle.Read: %v", err)
+	}
+	if read.SourceFile != "" || read.Prompt != "Sweep the backlog.\n" {
+		t.Fatalf("bundle holds %+v", read)
+	}
+
+	if err := os.Remove(brief); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ExportTask(src, "nightly", &buf, time.Now()); err == nil || !strings.Contains(err.Error(), "does not exist") {
+		t.Fatalf("export with the file gone: err = %v, want it to say so", err)
+	}
+}

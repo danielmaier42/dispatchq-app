@@ -374,6 +374,7 @@ func cmdRun(args []string) error {
 			Store: st, Runner: eng, Canceler: eng, TakeOver: eng,
 			ChooseFolder: plat.chooseFolder, ActiveTasks: eng.ActiveTaskIDs, ActiveRuns: eng.ActiveRuns,
 			SaveFile:     plat.saveFile,
+			ChooseFile:   plat.chooseFile,
 			OpenTerminal: plat.openTerminal,
 			WakeError:    eng.WakeError, WarmFileAccess: plat.warmFileAccess, Updates: updates,
 			LimitedUntil: eng.LimitedUntil, BlockedProviders: eng.BlockedProviders, BlockReasons: eng.BlockReasons,

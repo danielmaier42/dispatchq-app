@@ -1786,3 +1786,43 @@ func TestQueueShowsTheSchedulersHold(t *testing.T) {
 		t.Fatalf("hold of free = %+v, want none", byID["free"].Hold)
 	}
 }
+
+func TestChooseFile(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotPrompt, gotStart string
+	chooser := func(_ context.Context, prompt, start string) (string, bool, error) {
+		gotPrompt, gotStart = prompt, start
+		return "/Users/me/scripts/watch.sh", true, nil
+	}
+	srv := httptest.NewServer(handler(Deps{Store: st, ChooseFile: chooser}))
+	t.Cleanup(srv.Close)
+
+	var res struct {
+		Path string `json:"path"`
+	}
+	do(t, srv, "POST", "/api/fs/choose-file?kind=script&path=%2FUsers%2Fme%2Fscripts%2Fold.sh", nil).into(t, &res)
+	if res.Path != "/Users/me/scripts/watch.sh" {
+		t.Fatalf("path = %q", res.Path)
+	}
+	if !strings.Contains(gotPrompt, "script") || gotStart != "/Users/me/scripts/old.sh" {
+		t.Fatalf("dialog asked %q starting at %q, want the script wording and the current file", gotPrompt, gotStart)
+	}
+	do(t, srv, "POST", "/api/fs/choose-file", nil).into(t, &res)
+	if !strings.Contains(gotPrompt, "prompt file") {
+		t.Fatalf("dialog asked %q, want the prompt wording by default", gotPrompt)
+	}
+
+	cancelSrv := httptest.NewServer(handler(Deps{Store: st, ChooseFile: func(context.Context, string, string) (string, bool, error) { return "", false, nil }}))
+	t.Cleanup(cancelSrv.Close)
+	if r := do(t, cancelSrv, "POST", "/api/fs/choose-file", nil); r.Status != http.StatusNoContent {
+		t.Fatalf("cancel should be 204, got %d", r.Status)
+	}
+	none := httptest.NewServer(handler(Deps{Store: st}))
+	t.Cleanup(none.Close)
+	if r := do(t, none, "POST", "/api/fs/choose-file", nil); r.Status != http.StatusServiceUnavailable {
+		t.Fatalf("without a dialog the endpoint should be 503, got %d", r.Status)
+	}
+}

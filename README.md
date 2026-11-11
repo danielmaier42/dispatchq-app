@@ -90,6 +90,7 @@ workflow engine:
 - [Letting a task publish artifacts](#letting-a-task-publish-artifacts)
 - [Letting a task send a notification](#letting-a-task-send-a-notification)
 - [Script jobs](#script-jobs)
+- [Inline or from a file](#inline-or-from-a-file)
 - [Quiet history for frequent jobs](#quiet-history-for-frequent-jobs)
 - [Backfill tasks](#backfill-tasks)
 - [Sharing tasks as files](#sharing-tasks-as-files)
@@ -131,7 +132,9 @@ The nightly cycle looks like this:
 1. You queue tasks during the day. Each task is a **prompt** plus the **folder**
    it runs in (its repo/context), with an optional trigger time. A task can also
    be a **script job**, where that text is a program instead of a prompt — see
-   [Script jobs](#script-jobs).
+   [Script jobs](#script-jobs). Either text can live in a file of yours
+   instead, read at the start of every run — see
+   [Inline or from a file](#inline-or-from-a-file).
 2. The daemon watches the queue and starts due tasks headless, through the CLI
    of the provider each task names (Claude Code by default), one at a time
    unless a task is marked parallel. A script job is started the same way, but
@@ -351,7 +354,9 @@ Windows on ARM hardware (see [docs/windows/PLAN.md](docs/windows/PLAN.md) for th
 1. **Ask DispatchQ** (**⌘J**) and describe the job in plain words; the assistant
    drafts it and you confirm it on its card (see [Asking DispatchQ](#asking-dispatchq)).
    Or open the task form with the **+** next to it (**⌘N**) — give it a prompt, choose the **job type** (*Agent*, the
-   default, or *Script* — see [Script jobs](#script-jobs)), pick the working folder (prefilled from
+   default, or *Script* — see [Script jobs](#script-jobs)), write the prompt or script
+   *Inline* or switch it to *File* and pick the file it is read from on every run with
+   **Choose…** (see [Inline or from a file](#inline-or-from-a-file)), pick the working folder (prefilled from
    **Settings → General → Default working directory**, if you set one), and choose a trigger
    (as-soon-as-possible, earliest start, or cron; a cron schedule is validated as
    you type, with a preview of its next three runs). Optionally pick the provider
@@ -421,6 +426,9 @@ explains it.
 - **Two kinds of job.** An *agent job* sends its prompt to a model; a *script
   job* runs it as a program — deterministic, free, and never held up by a rate
   limit. See [Script jobs](#script-jobs).
+- **Inline or from a file.** Either kind of job can keep its prompt or script
+  in a file of yours, read fresh at the start of every run, so the job follows
+  the file as it changes. See [Inline or from a file](#inline-or-from-a-file).
 - **Per-task overrides** for provider, model, reasoning effort, permission
   handling, notification and quiet history, layered over global defaults.
 - **Built-in run framing.** Every run is told it is headless and unattended,
@@ -662,7 +670,8 @@ first. The window opens on the Dashboard:
   Log; a recurring task stays here with a *running* badge; hovering its
   cron expression shows the next occurrence and when it last ran. Underneath
   each task sits a badge for every option it has switched on: *script* (it runs
-  as a program, without a model), *parallel*, *granted* (orange, the task skips
+  as a program, without a model), *file* (it reads its prompt or script from a
+  file on every run; the tooltip names it), *parallel*, *granted* (orange, the task skips
   permission prompts), *notifies* (blue), and *silent* (quiet history). A script
   job has no provider or model to name; its *script* badge says so. A task the rate limit interrupted carries a
   *rescheduled* badge (orange) whose tooltip names when its interrupted session
@@ -1232,14 +1241,15 @@ finish). It changes nothing.
 ```
 dispatchq list [--json]                          # show the queue
 dispatchq show   ID [--json]                     # one task in full, prompt included
-dispatchq add    --id ID --prompt P --dir DIR [--name N] [--group G]
+dispatchq add    --id ID (--prompt P | --source-file PATH) --dir DIR [--name N] [--group G]
                [--kind agent|script]           # script = a program, no model
+                                               # --source-file: read the text from PATH on every run
                [--trigger asap|fixed|cron] [--at RFC3339] [--cron EXPR]
                [--provider ID] [--model M] [--reasoning-effort E] [--parallel]
                [--skip-permissions] [--notify] [--quiet-history]
                [--backfill]                    # run only on allowance that would go unused
 dispatchq edit   ID                              # open the whole task in $EDITOR
-dispatchq edit   ID [--name N] [--prompt P | --prompt-file PATH] [--dir DIR]
+dispatchq edit   ID [--name N] [--prompt P | --prompt-file PATH | --source-file PATH] [--dir DIR]
                [--group G]                     # "" takes it out of its group
                [--kind agent|script]           # switching to script drops the model settings
                [--trigger asap|fixed|cron] [--at RFC3339] [--cron EXPR]
@@ -1247,7 +1257,7 @@ dispatchq edit   ID [--name N] [--prompt P | --prompt-file PATH] [--dir DIR]
                [--parallel=BOOL] [--enabled=BOOL]
                [--skip-permissions=BOOL] [--notify=BOOL] [--quiet-history=BOOL]
                [--backfill=BOOL]
-dispatchq queue  --prompt P [--at RFC3339 | --in DUR | --cron EXPR] [--dir DIR] [--name N]
+dispatchq queue  (--prompt P | --source-file PATH) [--at RFC3339 | --in DUR | --cron EXPR] [--dir DIR] [--name N]
                [--group G] [--kind agent|script]   # a queued job is an agent job unless told
                [--provider ID] [--model M] [--reasoning-effort E]
                [--parallel=BOOL] [--skip-permissions=BOOL]
@@ -1320,7 +1330,8 @@ Prompts are often pages long, so that table leaves them out, and a name longer
 than 40 characters is cut with an ellipsis so the columns stay readable.
 `dispatchq show ID` prints every setting of one task, its full name and then its
 complete prompt — or, for a script job, its script; the settings only an agent
-job has are left out. Add `--json` to either command for the same data as JSON,
+job has are left out. A job that reads its text from a file shows the file's
+path as `source_file` instead. Add `--json` to either command for the same data as JSON,
 prompts and full names included.
 
 ### Editing a task
@@ -1342,10 +1353,16 @@ dispatchq edit nightly-sweep --group "Nightly"              # file it under a qu
 dispatchq edit nightly-sweep --group ""                     # and take it back out
 dispatchq edit nightly-sweep --enabled=false                # pause it
 dispatchq edit prod-watch --kind script --prompt-file ./watch.sh   # make it a script job
+dispatchq edit prod-watch --source-file ./watch.sh          # run whatever watch.sh says now
 ```
 
-- `--prompt-file` reads the prompt from a file, or from stdin when you pass `-`.
-  That is the practical way to set a long prompt without fighting shell quoting.
+- `--prompt-file` reads the prompt from a file, or from stdin when you pass `-`,
+  once, and stores a copy in the task. That is the practical way to set a long
+  prompt without fighting shell quoting.
+- `--source-file` stores the file's path instead of a copy: the job reads it at
+  the start of every run (see [Inline or from a file](#inline-or-from-a-file)).
+  A relative path is made absolute against the folder you run the command in.
+  `--prompt` or `--prompt-file` turns the job back into an inline one.
 - `--at` implies `--trigger fixed` and `--cron` implies `--trigger cron`, so a
   reschedule is one flag. Changing the trigger clears the timing fields that no
   longer apply.
@@ -1741,7 +1758,9 @@ Everything else is shared: the same queue, the same triggers and priority, the
 same groups, the same run log in the Log, the same notifications, the same
 quiet history, the same dependencies.
 
-**What it runs.** The script is written to a temporary file and executed. Begin
+**What it runs.** The script — typed inline, or read from its
+[file](#inline-or-from-a-file) when the run starts — is written to a temporary
+file and executed. Begin
 it with a shebang to choose the interpreter — `#!/bin/zsh`,
 `#!/usr/bin/env python3`, `#!/usr/bin/env node` — or leave it out and it runs
 under `/bin/sh`. It starts in the task's **working directory**, and it inherits
@@ -1797,6 +1816,51 @@ any other. With `--include-results` their answers arrive on the script's
 **standard input** rather than in front of its text, because a program cannot
 have a digest pasted on top of it. Without dependencies, standard input is
 closed immediately — an unattended run never waits for input nobody will type.
+
+## Inline or from a file
+
+Both kinds of job can hold their text in one of two places, picked with the
+**Inline | File** switch above the prompt (or script) in the task form:
+
+- **Inline** — the default — keeps the text in the task, in `config.toml`. What
+  the task says is what runs, until you edit the task.
+- **File** keeps only an **absolute path**: pick the file with **Choose…**,
+  which opens the system's file dialog (macOS: the Finder panel; Windows: the
+  Open dialog) in the folder of the file already set, or type the path. The job
+  reads that file at the
+  start of **every run**, so it always runs what the file says *now*: edit a
+  watcher script or a long brief in your own editor or repository, and the next
+  run picks it up without touching the queue. A prompt file is sent to the model
+  exactly like an inline prompt; a script file runs exactly like an inline
+  script, shebang included.
+
+From the CLI, `--source-file PATH` on `dispatchq add`, `edit` and `queue` does
+the same; a relative path is made absolute against the folder you run the
+command in. A job has one or the other: `--prompt` or `--prompt-file` with
+`--source-file` is refused, and on `edit` either one replaces the other. (Note
+the difference: `--prompt-file` reads a file *once* and stores a copy;
+`--source-file` stores the path.)
+
+**A file that cannot be read fails the run, and says so.** The path is not
+checked when the job is saved — a job earlier in a chain may well be what writes
+the file. When the run starts and the file is missing, empty, unreadable or
+larger than 1 MiB, the run is recorded as **failed** with the reason, for
+example `script file /Users/me/scripts/watch.sh does not exist`, and the usual
+failure notification goes out. Nothing is started.
+
+**What the Log shows.** Each run keeps the text it actually read, with the file
+it came from, so an old run still shows what ran even after the file changed.
+The queue marks such a job with a **File** badge; hover it for the path.
+
+**Dependencies** work as for inline jobs: with `--include-results` an agent job
+gets the digest in front of the file's text, a script on standard input.
+
+**Not covered.** The [prompt review](#the-prompt-review) reads only inline text
+(a file is read at run time, so there is nothing fixed to review when the job
+is saved). [Asking DispatchQ](#asking-dispatchq) drafts inline jobs; point one
+at a file in the form or with `--source-file`. A job [exported](#sharing-tasks-as-files)
+to a `.dispatchq` file carries the file's current text, not the path, and
+imports as an inline job — the path means nothing on another Computer.
 
 ## Quiet history for frequent jobs
 
@@ -1902,7 +1966,7 @@ zip archive with two entries:
 | Entry | Contents |
 |-------|----------|
 | `task.json` | Every setting of the task (id, name, working directory, trigger and schedule, parallel, enabled, model, permissions, notify) inside a small envelope: `format` (`dispatchq-task`), `format_version` (`1`), `exported_at`, and `task`. |
-| `prompt.md` | The prompt, byte for byte, as Markdown. |
+| `prompt.md` | The prompt, byte for byte, as Markdown. A task that reads its prompt or script [from a file](#inline-or-from-a-file) exports the file's current text here, and the bundle opens as an inline task. |
 
 Unzip it to read or edit either part by hand; zip the two files back up and the
 result imports again (a folder around them, as Finder's *Compress* adds, is

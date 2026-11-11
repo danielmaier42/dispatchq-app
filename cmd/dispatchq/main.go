@@ -10,6 +10,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -35,22 +36,24 @@ const usage = `dispatchq - control the Claude Code task queue
 Usage:
   dispatchq list [--json]
   dispatchq show   ID [--json]       (one task in full, prompt included)
-  dispatchq add    --id ID --prompt P --dir DIR [--name N] [--kind agent|script]
+  dispatchq add    --id ID (--prompt P | --source-file PATH) --dir DIR [--name N] [--kind agent|script]
                  [--group G] [--trigger asap|fixed|cron]
                  [--at RFC3339] [--cron EXPR] [--provider ID | --pool ID] [--model M]
                  [--reasoning-effort E] [--parallel] [--skip-permissions]
                  [--notify] [--quiet-history] [--backfill]
                  (--kind script runs --prompt as a program instead of sending it to a
-                 model: no provider, no model, no allowance, never held up by a limit)
+                 model: no provider, no model, no allowance, never held up by a limit.
+                 --source-file keeps the prompt or script in that file and reads it
+                 at the start of every run; a missing file fails the run)
   dispatchq edit   ID                (open the whole task in $EDITOR)
-  dispatchq edit   ID [--name N] [--prompt P | --prompt-file PATH] [--dir DIR]
+  dispatchq edit   ID [--name N] [--prompt P | --prompt-file PATH | --source-file PATH] [--dir DIR]
                  [--kind agent|script] [--group G]
                  [--trigger asap|fixed|cron] [--at RFC3339] [--cron EXPR]
                  [--provider ID | --pool ID] [--model M] [--reasoning-effort E]
                  [--parallel=BOOL] [--enabled=BOOL] [--skip-permissions=BOOL]
                  [--notify=BOOL] [--quiet-history=BOOL] [--backfill=BOOL]
                  (only the flags you pass are changed)
-  dispatchq queue  --prompt P [--at RFC3339 | --in DUR | --cron EXPR] [--dir DIR] [--name N] [--group G]
+  dispatchq queue  (--prompt P | --source-file PATH) [--at RFC3339 | --in DUR | --cron EXPR] [--dir DIR] [--name N] [--group G]
                  [--kind agent|script] [--provider ID | --pool ID] [--model M] [--reasoning-effort E]
                  [--parallel=BOOL] [--skip-permissions=BOOL]
                  [--notify=BOOL] [--quiet-history=BOOL] [--backfill=BOOL]
@@ -259,7 +262,8 @@ func cmdAdd(st *store.Store, args []string) error {
 
 	t := task.Task{
 		ID: *id, Name: *name, Kind: task.Kind(s.kind), Prompt: *prompt, WorkingDir: fromCaller(*dir),
-		Trigger: task.Trigger(*trig), Cron: *cronArg, Enabled: true,
+		SourceFile: sourceFilePath(s.sourceFile),
+		Trigger:    task.Trigger(*trig), Cron: *cronArg, Enabled: true,
 		Provider: s.provider, Pool: s.pool, Model: s.model, ReasoningEffort: s.reasoning,
 		Group:    strings.TrimSpace(s.group),
 		Parallel: s.parallel, NotifyOnResult: s.notify,
@@ -496,6 +500,7 @@ func buildQueuedTask(parentJSON, id string, o queueOpts, now time.Time) (task.Ta
 	// caller can still ask for it explicitly with --quiet-history below.
 	t.ID = id
 	t.Prompt = o.prompt
+	t.SourceFile = "" // the parent's file is the parent's text, not this job's (--source-file sets one)
 	t.Name = o.name
 	t.Enabled = true
 	// The kind is not inherited: a script job queues follow-up work precisely
@@ -524,6 +529,9 @@ func buildQueuedTask(parentJSON, id string, o queueOpts, now time.Time) (task.Ta
 
 	// Explicit overrides win over inheritance, e.g. a cheap watcher queueing a
 	// review that must run on a stronger model with a visible run.
+	if o.prompt != "" && o.sourceFile != "" {
+		return task.Task{}, fmt.Errorf("choose either --prompt or --source-file")
+	}
 	o.apply(&t, o.has)
 
 	set := 0
@@ -563,6 +571,9 @@ func buildQueuedTask(parentJSON, id string, o queueOpts, now time.Time) (task.Ta
 
 	if t.Name == "" {
 		t.Name = defaultQueueName(o.prompt)
+		if t.SourceFile != "" {
+			t.Name = defaultQueueName(filepath.Base(t.SourceFile))
+		}
 	}
 	if t.IncludeResults && len(t.DependsOn) == 0 {
 		return task.Task{}, fmt.Errorf("--include-results needs at least one --depends-on")

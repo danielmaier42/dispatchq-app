@@ -93,3 +93,15 @@ func TestPowerShellDialogCarriesValuesWithoutQuoting(t *testing.T) {
 		t.Error("the file name must not appear raw in the script, where a quote could break out of it")
 	}
 }
+
+func TestPowerShellFileChooserOpensAnOpenFileDialog(t *testing.T) {
+	picked := `C:\Users\Zoë\scripts\watch.ps1`
+	r := &scriptRunner{out: psAnswerOutput(picked)}
+	got, chosen, err := PowerShellFileChooser(r)(context.Background(), "Select the script file", "")
+	if err != nil || !chosen || got != picked {
+		t.Fatalf("got (%q, %v, %v), want (%q, true, nil)", got, chosen, err, picked)
+	}
+	if script := decodedScript(t, r.args); !strings.Contains(script, "OpenFileDialog") || !strings.Contains(script, "CheckFileExists") {
+		t.Fatalf("script does not open a file dialog:\n%s", script)
+	}
+}

@@ -17,6 +17,7 @@ func TestDarwinPlatformHasEveryService(t *testing.T) {
 		"requestNotifyAuth": p.requestNotifyAuth != nil,
 		"notifyStatus":      p.notifyStatus != nil,
 		"chooseFolder":      p.chooseFolder != nil,
+		"chooseFile":        p.chooseFile != nil,
 		"saveFile":          p.saveFile != nil,
 		"openTerminal":      p.openTerminal != nil,
 		"warmFileAccess":    p.warmFileAccess != nil,

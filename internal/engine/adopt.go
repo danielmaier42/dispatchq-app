@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -289,7 +290,11 @@ func (e *Engine) adopt(rec store.Run, pid int, start string) (store.Run, error) 
 		return rec, fmt.Errorf("record run %s: %w", rec.RunID, err)
 	}
 	if err := e.store.AppendRun(rec); err != nil {
-		return rec, fmt.Errorf("record run %s: %w", rec.RunID, err)
+		if !errors.Is(err, store.ErrRunKept) {
+			return rec, fmt.Errorf("record run %s: %w", rec.RunID, err)
+		}
+		// Late, not lost: the run is taken back all the same.
+		fmt.Fprintf(os.Stderr, "dispatchqd: run %s: record run: %v\n", rec.RunID, err)
 	}
 	if f, err := os.OpenFile(rec.LogPath, os.O_WRONLY|os.O_APPEND, 0); err == nil {
 		writeNote(f, fmt.Sprintf("DispatchQ restarted at %s and took this run back (process %d). "+

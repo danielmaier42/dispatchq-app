@@ -279,6 +279,7 @@ func (s *Store) RetireTask(taskID string, oneShot bool) error {
 				st.ClearPendingResume(taskID)
 				if oneShot {
 					st.MarkCompletedOnce(taskID)
+					st.OweRemoval(taskID)
 				}
 				if err := s.SaveState(st); err != nil {
 					return fmt.Errorf("mark task %q completed: %w", taskID, err)
@@ -292,23 +293,31 @@ func (s *Store) RetireTask(taskID string, oneShot bool) error {
 			if err != nil {
 				return fmt.Errorf("remove completed task %q from the queue: %w", taskID, err)
 			}
-			if !removeTask(&cfg, taskID) {
-				return nil
+			if removeTask(&cfg, taskID) {
+				if err := s.SaveConfig(cfg); err != nil {
+					return fmt.Errorf("remove completed task %q from the queue: %w", taskID, err)
+				}
 			}
-			if err := s.SaveConfig(cfg); err != nil {
-				return fmt.Errorf("remove completed task %q from the queue: %w", taskID, err)
+			st, err := s.LoadState()
+			if err == nil {
+				st.ClearRemovalOwed(taskID)
+				err = s.SaveState(st)
+			}
+			if err != nil {
+				return fmt.Errorf("record task %q removed from the queue: %w", taskID, err)
 			}
 			return nil
 		})
 	})
 }
 
-// RepairCompletedOneShots takes every one-shot task out of the queue that has
-// already run to completion but is still listed: a daemon whose removal failed
-// after it had marked the task done left it there, where it is never due
-// again. A task holding a waiting session has not completed and stays. It is
-// meant to run at daemon start, before the first tick. Returns the tasks it
-// removed.
+// RepairCompletedOneShots takes out of the queue every one-shot task whose
+// removal RetireTask owes: it was marked completed, but the write that takes
+// it out of the queue failed, so it stayed listed and is never due again. A
+// task listed for another reason (queued again by hand under the id of one
+// that ran) is left alone, and so is one with a session waiting to continue
+// or a run in flight. It is meant to run at daemon start, before the first
+// tick. Returns the tasks it removed.
 func (s *Store) RepairCompletedOneShots() ([]task.Task, error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -318,24 +327,38 @@ func (s *Store) RepairCompletedOneShots() ([]task.Task, error) {
 		if err != nil {
 			return err
 		}
+		if len(st.RemovalOwed) == 0 {
+			return nil
+		}
 		cfg, err := s.LoadConfig()
 		if err != nil {
 			return err
 		}
+		queued := map[string]bool{}
 		kept := cfg.Tasks[:0:0]
 		for _, t := range cfg.Tasks {
 			_, waiting := st.PendingResume(t.ID)
-			if t.Trigger != task.TriggerCron && st.IsCompletedOnce(t.ID) && !waiting {
+			if st.IsRemovalOwed(t.ID) && st.IsCompletedOnce(t.ID) && !waiting && !st.hasLiveRun(t.ID) {
 				removed = append(removed, t)
 				continue
 			}
+			queued[t.ID] = true
 			kept = append(kept, t)
 		}
-		if len(removed) == 0 {
-			return nil
+		if len(removed) > 0 {
+			cfg.Tasks = kept
+			if err := s.SaveConfig(cfg); err != nil {
+				return err
+			}
 		}
-		cfg.Tasks = kept
-		return s.SaveConfig(cfg)
+		// What is owed is settled once the task is out of the queue, by this
+		// repair or by anyone else.
+		for id := range st.RemovalOwed {
+			if !queued[id] {
+				st.ClearRemovalOwed(id)
+			}
+		}
+		return s.SaveState(st)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("remove completed one-shot tasks: %w", err)

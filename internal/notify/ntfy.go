@@ -41,35 +41,52 @@ type Ntfy struct {
 // copied from another machine) is skipped instead of failing on every send.
 func (t Ntfy) Configured() bool { return ValidateNtfy(t.Server, t.Topic) == nil }
 
-// Notify publishes the notification to the topic. A link is sent as ntfy's
-// click action, so tapping the notification on the phone opens it.
+// Notify publishes the notification to the topic.
 func (t Ntfy) Notify(ctx context.Context, n Notification) error {
+	_, err := t.Deliver(ctx, n)
+	return err
+}
+
+// ntfyHighPriority is ntfy's "high" priority: a longer vibration and a
+// pop-over on the phone, short of the "urgent" level that overrides silence.
+const ntfyHighPriority = 4
+
+// Deliver publishes the notification to the topic and returns the message id
+// ntfy assigned. A link is sent as ntfy's click action, so tapping the
+// notification on the phone opens it.
+func (t Ntfy) Deliver(ctx context.Context, n Notification) (string, error) {
 	if !t.Configured() {
-		return fmt.Errorf("ntfy not configured")
+		return "", fmt.Errorf("ntfy not configured")
 	}
 	endpoint, err := NtfyEndpoint(t.Server)
 	if err != nil {
-		return fmt.Errorf("ntfy: %w", err)
+		return "", fmt.Errorf("ntfy: %w", err)
 	}
-	body, err := json.Marshal(struct {
-		Topic   string `json:"topic"`
-		Title   string `json:"title"`
-		Message string `json:"message"`
-		Click   string `json:"click,omitempty"`
+	payload := struct {
+		Topic    string `json:"topic"`
+		Title    string `json:"title"`
+		Message  string `json:"message"`
+		Click    string `json:"click,omitempty"`
+		Priority int    `json:"priority,omitempty"`
 	}{
 		Topic:   strings.TrimSpace(t.Topic),
 		Title:   n.Title,
 		Message: n.Message,
 		Click:   n.URL,
-	})
+	}
+	if n.Priority == PriorityHigh {
+		payload.Priority = ntfyHighPriority
+	}
+	body, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("build ntfy payload: %w", err)
+		return "", fmt.Errorf("build ntfy payload: %w", err)
 	}
 	header := http.Header{}
 	if token := strings.TrimSpace(t.Token); token != "" {
 		header.Set("Authorization", "Bearer "+token)
 	}
-	return post(ctx, t.Client, "ntfy", endpoint, "application/json", string(body), header)
+	reply, err := post(ctx, t.Client, "ntfy", endpoint, "application/json", string(body), header)
+	return receiptField(reply, "id"), err
 }
 
 // NtfyEndpoint normalizes a configured server into the URL messages are posted

@@ -230,6 +230,8 @@ func cmdRun(args []string) error {
 		eng.SetSleepInhibitor(plat.sleep)
 	}
 	eng.SetNotifier(liveNotifier{st: st, desktop: plat.desktop})
+	// A run started in a wake without network fails at once; it waits instead.
+	eng.SetNetworkCheck(engine.LookupHost)
 	// A run's process can outlive the daemon that started it (an update that
 	// kills the old daemon, a crash). Take back every run still going before
 	// the first tick, so it shows as running and its task does not start a
@@ -422,16 +424,30 @@ type liveNotifier struct {
 	desktop notify.Notifier
 }
 
-// Notify delivers to every channel that is switched on and configured. A
-// config that fails to load is reported rather than swallowed: silently
-// falling back to a zero Settings would drop every remote channel from this
-// send (and every send after, until the file is fixed) with no trace of why.
+// Notify delivers to every channel that is switched on and configured.
 func (l liveNotifier) Notify(ctx context.Context, n notify.Notification) error {
+	chans, err := l.Channels()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dispatchqd: notify: %v\n", err)
+	}
+	notifiers := make([]notify.Notifier, len(chans))
+	for i, c := range chans {
+		notifiers[i] = c.Notifier
+	}
+	return notify.Multi{Notifiers: notifiers}.Notify(ctx, n)
+}
+
+// Channels lists the channels that are switched on and configured, each by
+// name, so the engine can deliver to and retry each on its own. A config that
+// fails to load is reported rather than swallowed: silently falling back to a
+// zero Settings would drop every remote channel with no trace of why, and the
+// engine must not mistake that for the channels being switched off.
+func (l liveNotifier) Channels() ([]notify.Channel, error) {
 	cfg, err := l.st.LoadConfig()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "dispatchqd: notify: load config: %v (falling back to desktop notifications only)\n", err)
+		return notifyChannels(l.desktop, store.Settings{}), fmt.Errorf("load config: %w (only the desktop channel is known)", err)
 	}
-	return notify.Multi{Notifiers: notifyChannels(l.desktop, cfg.Settings)}.Notify(ctx, n)
+	return notifyChannels(l.desktop, cfg.Settings), nil
 }
 
 // notifyChannels assembles the notification channels: the desktop channel
@@ -439,21 +455,21 @@ func (l liveNotifier) Notify(ctx context.Context, n notify.Notification) error {
 // is both switched on and configured (FA-39/40/41).
 // A channel switched on but left half-filled in is skipped rather than attempted
 // and logged as an error on every single notification.
-func notifyChannels(desktop notify.Notifier, s store.Settings) []notify.Notifier {
-	var notifiers []notify.Notifier
+func notifyChannels(desktop notify.Notifier, s store.Settings) []notify.Channel {
+	var chans []notify.Channel
 	if desktop != nil {
-		notifiers = append(notifiers, desktop)
+		chans = append(chans, notify.Channel{Name: "desktop", Notifier: desktop})
 	}
 	if po := (notify.Pushover{Token: s.Pushover.Token, UserKey: s.Pushover.UserKey}); s.Pushover.Enabled && po.Configured() {
-		notifiers = append(notifiers, po)
+		chans = append(chans, notify.Channel{Name: "pushover", Remote: true, Notifier: po})
 	}
 	if nt := (notify.Ntfy{Server: s.Ntfy.Server, Topic: s.Ntfy.Topic, Token: s.Ntfy.Token}); s.Ntfy.Enabled && nt.Configured() {
-		notifiers = append(notifiers, nt)
+		chans = append(chans, notify.Channel{Name: "ntfy", Remote: true, Notifier: nt})
 	}
 	if wh := (notify.Webhook{URL: s.Webhook.URL, Template: s.Webhook.Template}); s.Webhook.Enabled && wh.Configured() {
-		notifiers = append(notifiers, wh)
+		chans = append(chans, notify.Channel{Name: "webhook", Remote: true, Notifier: wh})
 	}
-	return notifiers
+	return chans
 }
 
 // warmEnabledTasks provokes the prompt for every enabled task's folder at

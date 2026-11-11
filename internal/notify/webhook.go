@@ -49,11 +49,19 @@ func (w Webhook) Configured() bool { return ValidateWebhook(w.URL, w.Template) =
 
 // Notify posts the rendered template to the endpoint.
 func (w Webhook) Notify(ctx context.Context, n Notification) error {
+	_, err := w.Deliver(ctx, n)
+	return err
+}
+
+// Deliver posts the rendered template to the endpoint. A webhook has no
+// receipt of its own, so the receipt is always empty.
+func (w Webhook) Deliver(ctx context.Context, n Notification) (string, error) {
 	if !w.Configured() {
-		return fmt.Errorf("webhook not configured")
+		return "", fmt.Errorf("webhook not configured")
 	}
 	body := RenderWebhookBody(w.Template, n)
-	return post(ctx, w.Client, "webhook", strings.TrimSpace(w.URL), "application/json", body, nil)
+	_, err := post(ctx, w.Client, "webhook", strings.TrimSpace(w.URL), "application/json", body, nil)
+	return "", err
 }
 
 // RenderWebhookBody substitutes a notification into a template. Values are

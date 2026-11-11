@@ -225,6 +225,23 @@ type Engine struct {
 	// holdLog is where a long wait is written down (stdout, the daemon's log).
 	holds   holds
 	holdLog io.Writer
+
+	// outbox coordinates delivery retries (see delivery.go); deliveryLog
+	// gets a line per accepted notification, deliveryErrLog every failure.
+	outbox          deliveries
+	deliveryLog     io.Writer
+	deliveryErrLog  io.Writer
+	lastDeliveryErr string
+	lastChannelsErr string
+	// alerts holds the in-memory notification episodes: provider pauses
+	// (see alerts.go). Failure streaks are kept on disk instead.
+	alerts alerts
+	// netCheck answers whether the host a provider's API lives on can be
+	// reached, so a run is not started into a wake without network (see
+	// network.go). Nil means always online. offline is what the last check
+	// found, so the change is logged once.
+	netCheck func(ctx context.Context, host string) error
+	offline  atomic.Bool
 }
 
 // ShutdownGrace is how long Loop lets in-flight runs finish on shutdown before
@@ -250,6 +267,8 @@ func New(st *store.Store, gates *limit.Gates, r Runner, c clock.Clock, providers
 		runningOn:      map[string]int{},
 		providerHealth: map[string]string{},
 		holdLog:        os.Stdout,
+		deliveryLog:    os.Stdout,
+		deliveryErrLog: os.Stderr,
 	}
 	// Runs use their own context so that cancelling the loop (SIGINT) does not
 	// immediately kill in-flight Claude processes; shutdown drains them first.
@@ -308,7 +327,11 @@ func (e *Engine) Tick(ctx context.Context) error {
 	// held collects why each due task does not start this tick; whatever is
 	// left in it at the end is what the queue shows.
 	held := map[string]string{}
-	assigned := e.assign(ctx, providers, due, cfg.Settings.BackfillUrgencyOrDefault(), held)
+	// explained collects the tasks held for a reason that is announced on its
+	// own (a provider pause, a provider that cannot run) or needs no telling
+	// (no network): their wait is not notified as well.
+	explained := map[string]bool{}
+	assigned := e.assign(ctx, providers, due, cfg.Settings.BackfillUrgencyOrDefault(), held, explained)
 
 	// Their harnesses are then probed *outside* the lock. A readiness check
 	// spawns a CLI and a CLI can hang; holding e.mu across that would stall the
@@ -317,6 +340,7 @@ func (e *Engine) Tick(ctx context.Context) error {
 	// asked without the cache — this is the moment right before a start, which is
 	// exactly when a stale verdict would cost a recorded run.
 	health := e.refreshProviderHealth(ctx, providers, assigned)
+	online := e.probeNetwork(ctx, assigned)
 	if ctx.Err() != nil {
 		// Stopping: the probes were cut short, so their verdicts must not hold
 		// tasks back or start them. The next daemon's first tick decides.
@@ -358,6 +382,11 @@ func (e *Engine) Tick(ctx context.Context) error {
 			continue
 		case !a.task.IsScript() && !health.ready(a.resolved):
 			held[a.task.ID] = health.reason(a.resolved)
+			explained[a.task.ID] = true
+			continue
+		case !a.task.IsScript() && !online.reachable(a.resolved):
+			held[a.task.ID] = "No network connection; it starts once " + a.resolved.Instance.Label() + " can be reached again."
+			explained[a.task.ID] = true
 			continue
 		}
 		runnable = append(runnable, a.task)
@@ -374,7 +403,8 @@ func (e *Engine) Tick(ctx context.Context) error {
 	overdue := schedule.Overdue(runnable, since, now)
 	selected := schedule.Select(runnable, e.runningState(), overdue)
 	maps.Copy(held, schedule.Held(runnable, e.runningState(), overdue))
-	e.holds.update(held, now, e.holdLog)
+	long := e.holds.update(held, now, e.holdLog, holdLimits(cfg, explained))
+	e.announceHolds(long, taskNames(cfg))
 	starts := make([]start, 0, len(selected))
 	for _, t := range selected {
 		starts = append(starts, start{task: t, resolved: ready[t.ID], deps: deps[t.ID]})
@@ -419,7 +449,7 @@ func (e *Engine) holdAll(cfg store.Config, reason string) {
 	for _, t := range due {
 		held[t.ID] = reason
 	}
-	e.holds.update(held, e.clock.Now(), e.holdLog)
+	e.holds.update(held, e.clock.Now(), e.holdLog, nil)
 }
 
 // allDue is dueTasks with the dependencies worked out first.
@@ -484,7 +514,7 @@ type assignment struct {
 // (see provider.Selection.Backfill); while there is none it is dropped too.
 //
 // Why a dropped task does not start is filed in held, by task id.
-func (e *Engine) assign(ctx context.Context, set provider.Set, due []task.Task, backfill float64, held map[string]string) []assignment {
+func (e *Engine) assign(ctx context.Context, set provider.Set, due []task.Task, backfill float64, held map[string]string, explained map[string]bool) []assignment {
 	out := make([]assignment, 0, len(due))
 	// Which pool member holds a task's interrupted session is read once per
 	// pass. Without it a pool would pick by rank and drop the session.
@@ -527,6 +557,7 @@ func (e *Engine) assign(ctx context.Context, set provider.Set, due []task.Task, 
 		if err == nil && !e.gateOpen(res.Instance.ID) {
 			held[t.ID] = fmt.Sprintf("%s is out of allowance until %s.",
 				res.Instance.Label(), reopenText(e.gates.For(res.Instance.ID).BlockedUntil(), e.clock.Now()))
+			explained[t.ID] = true
 			continue
 		}
 		if err == nil {
@@ -1448,88 +1479,6 @@ func quietDrop(t task.Task, status store.RunStatus) bool {
 	return status == store.StatusSuccess
 }
 
-// notifyOutcome sends a best-effort notification. Failures and auth problems
-// always notify (FA-35/FA-38); successes notify only when the task opted in via
-// NotifyOnResult. When opted in, the last result message is included.
-func (e *Engine) notifyOutcome(t task.Task, rec store.Run, resultText string) {
-	if e.notifier == nil {
-		return
-	}
-	msg := truncateRunes(strings.TrimSpace(resultText), 300)
-
-	// The run is the click target: the notification opens its log in the window.
-	n := notify.Notification{RunID: rec.RunID, TaskID: rec.TaskID, TaskName: rec.TaskName}
-	switch rec.Status {
-	case store.StatusSuccess:
-		if !t.NotifyOnResult {
-			return
-		}
-		n.Kind = store.InboxKindSuccess
-		n.Title = "DispatchQ ✓ " + rec.TaskName
-		n.Message = msg
-		if n.Message == "" {
-			n.Message = "Completed successfully."
-		}
-	case store.StatusFailed:
-		n.Kind = store.InboxKindFailure
-		n.Title = "DispatchQ ✗ " + rec.TaskName + " failed"
-		if t.NotifyOnResult && msg != "" {
-			n.Message = msg
-		} else if rec.Error != "" {
-			n.Message = rec.Error
-		} else {
-			n.Message = "Task failed."
-		}
-	case store.StatusAuthError:
-		n.Kind = store.InboxKindFailure
-		n.Title = "DispatchQ: login problem"
-		n.Message = rec.TaskName + ": Claude Code authentication problem — please re-login."
-	default:
-		return
-	}
-	e.send(n)
-}
-
-// send delivers one notification, best-effort, and reports a failed channel
-// on stderr: the daemon runs unattended, so the log is the only place the
-// operator can find out why an alert never arrived. Deliberately not bound to
-// the loop's context — a notification raised moments before shutdown would
-// otherwise be lost.
-//
-// Before anything goes out, the notification is written to the inbox the
-// Notifications view lists, under the id the macOS notification then carries:
-// a click marks that entry read, and a channel that swallows the message still
-// leaves it where the operator can find it.
-func (e *Engine) send(n notify.Notification) {
-	now := e.clock.Now()
-	n.ID = "i-" + now.UTC().Format("20060102T150405") + "-" + randid.Hex(3)
-	if err := e.store.AddInboxEntry(inboxEntry(n, now)); err != nil {
-		fmt.Fprintf(os.Stderr, "dispatchqd: notification %q not recorded: %v\n", n.Title, err)
-		n.ID = "" // nothing to mark read; a click falls back to the target alone
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	if err := e.notifier.Notify(ctx, n); err != nil {
-		fmt.Fprintf(os.Stderr, "dispatchqd: notification %q not delivered: %v\n", n.Title, err)
-	}
-}
-
-// inboxEntry is the inbox record of a notification about to be sent.
-func inboxEntry(n notify.Notification, sentAt time.Time) store.InboxEntry {
-	return store.InboxEntry{
-		ID:         n.ID,
-		Kind:       n.Kind,
-		Title:      n.Title,
-		Message:    n.Message,
-		ArtifactID: n.ArtifactID,
-		RunID:      n.RunID,
-		URL:        n.URL,
-		TaskID:     n.TaskID,
-		TaskName:   n.TaskName,
-		SentAt:     sentAt,
-	}
-}
-
 // noteErr logs a recurring failure once: err is written to stderr only when it
 // differs from the last one recorded in last (this runs on every tick), and a
 // nil err clears the memo so the next failure is logged again.
@@ -1585,7 +1534,17 @@ func (e *Engine) ActiveTaskIDs() []string {
 // plans the next wake (if a Waker is set), so the machine can sleep between runs
 // and be woken when the next task is due (PLAN.md D8).
 func (e *Engine) Loop(ctx context.Context, interval time.Duration) error {
+	var last time.Time
 	for {
+		// A tick that comes much later than planned means the machine slept:
+		// whatever waits in the notification outbox is tried at once, since
+		// the network may just have come back with the wake.
+		// The wall clock, not the monotonic one, which on macOS stands still
+		// while the machine sleeps and would hide the gap.
+		now := e.clock.Now().Round(0)
+		woke := !last.IsZero() && now.Sub(last) > 3*interval+WakeGap
+		last = now
+		e.sweepDeliveries(woke)
 		if err := e.Tick(ctx); err != nil {
 			// A taken-back run is not this daemon's to wait for (see drain).
 			e.stopAdopts()
@@ -1625,6 +1584,10 @@ func (e *Engine) Loop(ctx context.Context, interval time.Duration) error {
 		}
 	}
 }
+
+// WakeGap is how much later than planned a tick must come to count as the
+// first after a sleep (on top of three missed intervals).
+const WakeGap = 30 * time.Second
 
 // drain lets in-flight runs finish (up to ShutdownGrace) on shutdown, then
 // terminates any stragglers — so a normal stop/restart doesn't fail runs.

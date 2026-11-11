@@ -233,6 +233,9 @@ type Engine struct {
 	deliveryErrLog  io.Writer
 	lastDeliveryErr string
 	lastChannelsErr string
+	// afterOutboxRead, when set (tests), runs between a retry sweep's read of
+	// the outbox and its claim, which is where a concurrent send can settle.
+	afterOutboxRead func()
 	// alerts holds the in-memory notification episodes: provider pauses
 	// (see alerts.go). Failure streaks are kept on disk instead.
 	alerts alerts
@@ -1534,6 +1537,14 @@ func (e *Engine) ActiveTaskIDs() []string {
 // plans the next wake (if a Waker is set), so the machine can sleep between runs
 // and be woken when the next task is due (PLAN.md D8).
 func (e *Engine) Loop(ctx context.Context, interval time.Duration) error {
+	// Learn the channels once up front, so a send while the settings cannot
+	// be read knows the remote channels to queue for even right after a
+	// start (see deliver).
+	if e.notifier != nil {
+		if _, err := e.channels(); err != nil {
+			fmt.Fprintln(e.deliveryErrLog, "dispatchqd: notify:", err)
+		}
+	}
 	var last time.Time
 	for {
 		// A tick that comes much later than planned means the machine slept:

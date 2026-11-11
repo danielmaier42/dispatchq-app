@@ -50,6 +50,8 @@ const (
 	InboxKindProvider = "provider"
 	// InboxKindTask is a message a task sent itself with `dispatchq notify`.
 	InboxKindTask = "task"
+	// InboxKindWaiting is a due task that has not started for a long time.
+	InboxKindWaiting = "waiting"
 )
 
 // InboxLimit is how many notifications the inbox keeps; the oldest make room

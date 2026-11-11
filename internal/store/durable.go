@@ -139,9 +139,10 @@ func (s *Store) flushLocked() error {
 		_ = f.Close()
 		return fmt.Errorf("write history: %w", err)
 	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("close history: %w", err)
-	}
+	// The records are written; what follows must not report them as not.
+	// A close that fails after a complete write loses nothing that a later
+	// write could fix, and calling them unwritten would write them twice.
+	_ = f.Close()
 	s.pending = nil
 	// Every fallback file now stands for a record history holds, including
 	// one an earlier write could not remove.
@@ -256,59 +257,59 @@ func sameRun(a, b Run) bool {
 	return err == nil && bytes.Equal(ja, jb)
 }
 
-// RetireTask ends a task's waiting session and, for a one-shot task, marks it
-// completed and takes it out of the queue, in one locked update, so another
-// writer does not see the task marked done but still queued. A failure the
-// disk may get over is tried again (see writeRetries), with no lock held
-// between the attempts, and a half already written is not written twice. The
-// mark is written first, because it is what keeps the task from starting a
-// second time; should the queue still refuse the removal, the task is
-// completed but listed, and the next daemon start removes it (see
-// RepairCompletedOneShots).
+// RetireTask ends a task's waiting session and, for a one-shot task, takes it
+// out of the queue and marks it completed, in one locked update. The queue is
+// written first: a task no longer listed cannot start again, whatever the
+// state says. The state then records the task completed, and, only when the
+// queue refused the removal, that the removal is still owed, so the next
+// daemon start finishes it (see RepairCompletedOneShots). A failure the disk
+// may get over is tried again (see writeRetries), with no lock held between
+// the attempts.
 func (s *Store) RetireTask(taskID string, oneShot bool) error {
-	marked := false
+	removed := !oneShot
 	return s.retry(func() error {
 		s.writeMu.Lock()
 		defer s.writeMu.Unlock()
 		return s.withWriteLock(func() error {
-			if !marked {
-				st, err := s.LoadState()
-				if err != nil {
-					return fmt.Errorf("mark task %q completed: %w", taskID, err)
-				}
-				st.ClearPendingResume(taskID)
-				if oneShot {
-					st.MarkCompletedOnce(taskID)
-					st.OweRemoval(taskID)
-				}
-				if err := s.SaveState(st); err != nil {
-					return fmt.Errorf("mark task %q completed: %w", taskID, err)
-				}
-				marked = true
-			}
-			if !oneShot {
-				return nil
-			}
-			cfg, err := s.LoadConfig()
-			if err != nil {
-				return fmt.Errorf("remove completed task %q from the queue: %w", taskID, err)
-			}
-			if removeTask(&cfg, taskID) {
-				if err := s.SaveConfig(cfg); err != nil {
-					return fmt.Errorf("remove completed task %q from the queue: %w", taskID, err)
-				}
+			var removeErr error
+			if !removed {
+				removeErr = s.dequeue(taskID)
+				removed = removeErr == nil
 			}
 			st, err := s.LoadState()
 			if err == nil {
-				st.ClearRemovalOwed(taskID)
+				st.ClearPendingResume(taskID)
+				if oneShot {
+					st.MarkCompletedOnce(taskID)
+					if removed {
+						st.ClearRemovalOwed(taskID)
+					} else {
+						st.OweRemoval(taskID)
+					}
+				}
 				err = s.SaveState(st)
 			}
 			if err != nil {
-				return fmt.Errorf("record task %q removed from the queue: %w", taskID, err)
+				return fmt.Errorf("mark task %q completed: %w", taskID, err)
+			}
+			if removeErr != nil {
+				return fmt.Errorf("remove completed task %q from the queue: %w", taskID, removeErr)
 			}
 			return nil
 		})
 	})
+}
+
+// dequeue takes the task out of the queue; one not listed is already out.
+func (s *Store) dequeue(taskID string) error {
+	cfg, err := s.LoadConfig()
+	if err != nil {
+		return err
+	}
+	if !removeTask(&cfg, taskID) {
+		return nil
+	}
+	return s.SaveConfig(cfg)
 }
 
 // RepairCompletedOneShots takes out of the queue every one-shot task whose
@@ -338,7 +339,8 @@ func (s *Store) RepairCompletedOneShots() ([]task.Task, error) {
 		kept := cfg.Tasks[:0:0]
 		for _, t := range cfg.Tasks {
 			_, waiting := st.PendingResume(t.ID)
-			if st.IsRemovalOwed(t.ID) && st.IsCompletedOnce(t.ID) && !waiting && !st.hasLiveRun(t.ID) {
+			if t.Trigger != task.TriggerCron && st.IsRemovalOwed(t.ID) && st.IsCompletedOnce(t.ID) &&
+				!waiting && !st.hasLiveRun(t.ID) {
 				removed = append(removed, t)
 				continue
 			}
@@ -353,10 +355,15 @@ func (s *Store) RepairCompletedOneShots() ([]task.Task, error) {
 		}
 		// What is owed is settled once the task is out of the queue, by this
 		// repair or by anyone else.
+		settled := false
 		for id := range st.RemovalOwed {
 			if !queued[id] {
 				st.ClearRemovalOwed(id)
+				settled = true
 			}
+		}
+		if !settled {
+			return nil
 		}
 		return s.SaveState(st)
 	})

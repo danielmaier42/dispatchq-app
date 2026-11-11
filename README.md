@@ -2239,10 +2239,11 @@ network is back, also across a daemon restart. For two minutes after a wake
 a try that fails on the network does not lengthen the pause and comes back
 after 30 seconds, since Wi-Fi often comes up a little after the Mac; a rate
 limit or server error keeps its pause. A failure streak's reminder replaces
-whatever still waits of the streak's earlier push, so the phone gets the
-latest count once. While
+whatever still waits of the streak's earlier push on the channels it goes to,
+so the phone gets the latest count rather than a stale alert first. While
 `config.toml` cannot be read, a notification goes to the desktop and is
-queued for the remote channels that were on before. An error names the
+queued for the remote channels that were on before (known from the last good
+read, or from what already waits in `deliveries.json`). An error names the
 service's host, never the full URL (for a Slack or Discord webhook the URL is
 the secret). Pushover, ntfy and the webhook
 are tried for 24 hours, the macOS banner for 1 hour; past that the daemon

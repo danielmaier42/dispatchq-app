@@ -64,6 +64,11 @@ func Refused(err error) bool {
 func post(ctx context.Context, client *http.Client, channel, endpoint, contentType, body string, header http.Header) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(body))
 	if err != nil {
+		// The parse error quotes the URL too; keep only its reason.
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err
+		}
 		return nil, fmt.Errorf("build %s request: %w", channel, err)
 	}
 	req.Header.Set("Content-Type", contentType)

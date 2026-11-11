@@ -122,3 +122,10 @@ func TestFailedRequestDoesNotQuoteTheURL(t *testing.T) {
 		t.Fatalf("error does not name the host: %v", err)
 	}
 }
+
+func TestUnparseableEndpointDoesNotQuoteTheURL(t *testing.T) {
+	_, err := post(context.Background(), nil, "webhook", "https://discord.com/api/webhooks/123/s3cr3t\n", "application/json", "{}", nil)
+	if err == nil || strings.Contains(err.Error(), "s3cr3t") || strings.Contains(err.Error(), "webhooks") {
+		t.Fatalf("err = %v, want a reason without the URL", err)
+	}
+}

@@ -193,13 +193,20 @@ func newInboxID(now time.Time) string {
 func (e *Engine) deliver(n notify.Notification, now time.Time) {
 	chans, err := e.channels()
 	// Remote channels that were there before the settings stopped loading
-	// are queued without a try: the sweep sends them once the settings load
-	// again, or drops them if they were switched off meanwhile.
+	// (the last good lookup, or what already waits in the outbox, which
+	// survives a restart) are queued without a try: the sweep sends them once
+	// the settings load again, or drops them if they were switched off.
 	var later []string
 	if err != nil {
 		fmt.Fprintf(e.deliveryErrLog, "dispatchqd: notify: %v (sending to the channels that are known, queueing the others)\n", err)
-		for _, name := range e.outbox.knownRemote() {
-			if !slices.ContainsFunc(chans, func(c notify.Channel) bool { return c.Name == name }) {
+		names := e.outbox.knownRemote()
+		if waiting, rerr := e.store.PendingDeliveries(); rerr == nil {
+			for _, d := range waiting {
+				names = append(names, d.Channel)
+			}
+		}
+		for _, name := range names {
+			if !slices.Contains(later, name) && !slices.ContainsFunc(chans, func(c notify.Channel) bool { return c.Name == name }) {
 				later = append(later, name)
 			}
 		}
@@ -227,19 +234,23 @@ func (e *Engine) deliver(n notify.Notification, now time.Time) {
 		queued = append(queued, store.PendingDelivery{ID: key + "/" + name, Channel: name, Notification: body, Created: now, NextTry: now})
 	}
 	// Claimed before they are written, so a retry sweep reading the outbox
-	// in between finds them taken and leaves them to this send. Only what was
-	// claimed is tried and released: releasing someone else's claim would let
-	// a third goroutine take the same delivery.
-	mine := e.outbox.claim(ids)
-	defer e.outbox.release(mine)
+	// in between finds them taken and leaves them to this send. The ids are
+	// new, so the claim always gets them all.
+	e.outbox.claim(ids)
+	defer e.outbox.release(ids)
+	channel := map[string]bool{}
+	for _, d := range queued {
+		channel[d.Channel] = true
+	}
 	durable := true
 	if err := e.store.UpdatePendingDeliveries(func(list *[]store.PendingDelivery) error {
 		// A newer send of the same inbox notification (a streak's reminder)
-		// supersedes what still waits of the older one: the phone gets the
-		// latest count once, not a stale alert followed by the reminder.
+		// supersedes what still waits of the older one on the channels it
+		// goes to: the phone gets the latest count, not a stale alert
+		// followed by the reminder. One being tried right now is left alone.
 		if n.ID != "" {
 			*list = slices.DeleteFunc(*list, func(d store.PendingDelivery) bool {
-				return deliveryInboxID(d) == n.ID && !e.outbox.isClaimed(d.ID)
+				return channel[d.Channel] && deliveryInboxID(d) == n.ID && !e.outbox.isClaimed(d.ID)
 			})
 		}
 		*list = append(*list, queued...)
@@ -254,9 +265,6 @@ func (e *Engine) deliver(n notify.Notification, now time.Time) {
 	var tries []deliveryTry
 	var wg sync.WaitGroup
 	for i, c := range chans {
-		if !slices.Contains(mine, ids[i]) {
-			continue
-		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -340,7 +348,7 @@ func (e *Engine) settle(tries []deliveryTry, durable bool) {
 			fmt.Fprintf(e.deliveryErrLog, "dispatchqd: notification %q not delivered by %s: %v\n", t.title, t.channel.Name, t.err)
 		case t.at.Sub(t.entry.Created) >= retryWindow(t.channel):
 			done[t.entry.ID] = true
-			e.logLost(t.title, t.channel, t.err.Error())
+			e.logLost(t.title, t.channel, t.entry.Attempts+1, t.err.Error())
 		default:
 			next := t.entry
 			next.NextTry, next.Attempts = failedTry(t)
@@ -369,9 +377,9 @@ func (e *Engine) settle(tries []deliveryTry, durable bool) {
 }
 
 // logLost says, loudly, that a notification will never reach a channel.
-func (e *Engine) logLost(title string, c notify.Channel, lastErr string) {
-	fmt.Fprintf(e.deliveryErrLog, "dispatchqd: NOTIFICATION LOST: %q could not be delivered by %s within %s; last error: %s\n",
-		title, c.Name, retryWindow(c), lastErr)
+func (e *Engine) logLost(title string, c notify.Channel, tries int, lastErr string) {
+	fmt.Fprintf(e.deliveryErrLog, "dispatchqd: NOTIFICATION LOST: %q could not be delivered by %s within %s (%d counted tries); last error: %s\n",
+		title, c.Name, retryWindow(c), tries, lastErr)
 }
 
 func (e *Engine) logAccepted(t deliveryTry) {
@@ -383,9 +391,11 @@ func (e *Engine) logAccepted(t deliveryTry) {
 		line += fmt.Sprintf(" on a retry, %s after it was raised", t.at.Sub(t.entry.Created).Round(time.Second))
 	}
 	fmt.Fprintln(e.deliveryLog, line)
-	// A channel that just worked again is reachable: whatever else waits for
-	// it need not sit out its pause.
-	if t.retry {
+	// A channel that worked again after failing is reachable: whatever else
+	// waits for it need not sit out its pause. A delivery that never failed
+	// (queued while the settings could not be read) proves nothing of the
+	// kind, so it forces nothing.
+	if t.retry && t.entry.LastError != "" {
 		e.outbox.retrySoon()
 	}
 }
@@ -460,7 +470,7 @@ func (e *Engine) retryDeliveries(force bool) {
 			gone[d.ID] = true
 		case now.Sub(d.Created) >= retryWindow(c):
 			gone[d.ID] = true
-			e.logLost(deliveryTitle(d), c, d.LastError)
+			e.logLost(deliveryTitle(d), c, d.Attempts, d.LastError)
 		default:
 			queues[d.Channel] = append(queues[d.Channel], d)
 		}

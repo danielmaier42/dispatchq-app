@@ -413,3 +413,63 @@ func TestRemoteChannelsAreKnownFromTheStart(t *testing.T) {
 		t.Fatalf("outbox = %+v, want the pushover delivery queued", list)
 	}
 }
+
+// A reminder supersedes the waiting push only on the channels it goes to
+// itself; a channel it does not reach keeps the earlier push.
+func TestReminderKeepsWaitingPushesOfChannelsItDoesNotReach(t *testing.T) {
+	fc := clock.NewFake(time.Date(2026, 11, 9, 3, 15, 0, 0, time.UTC))
+	e, st, chans, _, _ := newDeliveryEngine(t, fc)
+	chans.phone.fail(errNoDNS)
+	n := notify.Notification{ID: "i-streak", Title: "first"}
+	e.deliver(n, fc.Now())
+	chans.noPhone = true
+	n.Title = "reminder"
+	e.deliver(n, fc.Now())
+	list := pending(t, st)
+	if len(list) != 1 || list[0].Channel != "pushover" || deliveryTitle(list[0]) != "first" {
+		t.Fatalf("outbox = %+v, want the first push still waiting for pushover", list)
+	}
+}
+
+// After a restart nothing has been looked up yet; the remote channels that
+// still wait in the outbox are known all the same.
+func TestUnreadableSettingsAfterARestartQueueTheWaitingChannels(t *testing.T) {
+	fc := clock.NewFake(time.Date(2026, 11, 9, 3, 15, 0, 0, time.UTC))
+	e, st, chans, _, _ := newDeliveryEngine(t, fc)
+	chans.phone.fail(errNoDNS)
+	e.send(notify.Notification{Title: "before the restart"})
+
+	next, _ := newTestEngine(t, &stub{}, fc)
+	next.store = st
+	next.deliveryErrLog = &bytes.Buffer{}
+	next.SetNotifier(&fakeChannels{desktop: &fakeChannel{}, phone: &fakeChannel{}, broken: true})
+	next.send(notify.Notification{Title: "after the restart"})
+	var titles []string
+	for _, d := range pending(t, st) {
+		if d.Channel == "pushover" {
+			titles = append(titles, deliveryTitle(d))
+		}
+	}
+	if len(titles) != 2 {
+		t.Fatalf("waiting pushover deliveries = %q, want both", titles)
+	}
+}
+
+// A delivery that never failed (queued while the settings could not be read)
+// does not make the next sweep override every other channel's pause.
+func TestDeliveryThatNeverFailedForcesNothing(t *testing.T) {
+	fc := clock.NewFake(time.Date(2026, 11, 9, 3, 15, 0, 0, time.UTC))
+	e, _, chans, _, _ := newDeliveryEngine(t, fc)
+	e.send(notify.Notification{Title: "learn the channels"})
+	chans.broken = true
+	e.send(notify.Notification{Title: "queued"})
+	chans.broken = false
+	e.retryDeliveries(false)
+	if got := len(chans.phone.received()); got != 2 {
+		t.Fatalf("pushover received %d, want both", got)
+	}
+	if _, force := e.outbox.startSweep(); force {
+		t.Fatal("a delivery that never failed forced the next sweep")
+	}
+	e.outbox.endSweep()
+}

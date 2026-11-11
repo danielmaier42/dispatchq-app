@@ -455,15 +455,16 @@ explains it.
 - **Hung runs are killed** after a configurable idle timeout, whole process
   group included.
 - **Runs cut off by a restart are recorded and notified.** A run whose process
-  ended while no daemon watched it (a crash, a power loss, an update that
-  killed the daemon) gets its outcome at the next start: the one its session
-  transcript shows when the turn had ended (Claude Code), otherwise *failed*
-  as interrupted. A turn that ended on an API error is read the way a live
-  run's is: a usage limit pauses the provider until the window the error
-  names and the session resumes then, a login problem is recorded as
-  `auth_error`, any other error as *failed*. This holds for quiet-history runs too, which otherwise
-  leave no trace. It is notified like any other failure, and the daemon log
-  names each run (`run … ended while no daemon watched it`).
+  ended while no daemon watched it (a crash, a power loss, an update that killed
+  the daemon) gets its outcome at the next start: the one its session transcript
+  shows when the turn had ended (Claude Code), otherwise *failed* as
+  interrupted. A turn that ended on an API error is read the way a live run's
+  is: a usage limit pauses the provider until the window the error names and the
+  session resumes then, a login problem is recorded as `auth_error`, any other
+  error as *failed*. This holds for quiet-history runs too, which have no
+  history row until they end; such a run is recorded as a normal, visible row,
+  not a hidden quiet one. It is notified like any other failure, and the daemon
+  log names each run (`run … ended while no daemon watched it`).
 - **An interrupted one-shot continues once.** When DispatchQ itself cuts off a
   one-shot task's run (the 30-second shutdown grace runs out, the daemon dies
   under it, or a run taken back after a restart ends without a readable

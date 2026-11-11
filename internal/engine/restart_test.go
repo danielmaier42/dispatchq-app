@@ -80,6 +80,9 @@ func TestRecoverRecordsAQuietRunCutOffByARestart(t *testing.T) {
 	if run.Status != store.StatusFailed || !strings.HasPrefix(run.Error, store.InterruptedError) || run.FinishedAt == nil {
 		t.Fatalf("quiet run = %+v, want recorded as interrupted", run)
 	}
+	if run.Quiet {
+		t.Fatal("the cut-off quiet run is hidden from the default Log; it must show")
+	}
 }
 
 // The incident: a one-shot cut off by a restart either started over from

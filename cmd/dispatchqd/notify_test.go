@@ -4,6 +4,9 @@ package main
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/danielmaier42/claudeq/internal/notify"
@@ -87,5 +90,44 @@ func TestNotifyChannelsSkipsDisabledEvenWhenConfigured(t *testing.T) {
 	channels := notifyChannels(desktopStub{}, s)
 	if len(channels) != 1 {
 		t.Fatalf("channels = %+v, want only the desktop (channels are configured but not enabled)", channels)
+	}
+}
+
+// The incident: config.toml could not be read while the system was out of
+// file handles, and every notification went to the desktop alone, so nothing
+// reached the phone. A failed read keeps the channels of the settings read
+// last, and still reports the failure, so the engine's outbox neither loses
+// the remote channels nor drops their queued deliveries as switched off.
+func TestLiveNotifierKeepsTheLastChannelsWhenTheConfigCannotBeRead(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := store.Config{Settings: store.Settings{Ntfy: store.Ntfy{Enabled: true, Topic: "dispatchq"}}}
+	if err := st.SaveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	l := &liveNotifier{st: st, desktop: desktopStub{}}
+	if got, err := l.Channels(); err != nil || len(got) != 2 {
+		t.Fatalf("channels = %+v, %v; want the desktop and ntfy", got, err)
+	}
+
+	path := filepath.Join(st.Home(), "config.toml")
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got, err := l.Channels()
+	if err == nil {
+		t.Fatal("a config that cannot be read was not reported")
+	}
+	var names []string
+	for _, c := range got {
+		names = append(names, c.Name)
+	}
+	if !slices.Contains(names, "ntfy") || !slices.Contains(names, "desktop") {
+		t.Fatalf("channels after a failed read = %v, want the desktop and ntfy still", names)
 	}
 }

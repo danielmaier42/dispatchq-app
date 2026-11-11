@@ -304,7 +304,9 @@ func (s *server) listTasks(w http.ResponseWriter, r *http.Request) {
 		}
 		// A task whose session is waiting for the rate limit is not idle: say so
 		// in the queue, so it does not look like a job that simply hangs.
-		if !active[t.ID] && st != nil && hasPendingResume(st, t.ID) {
+		// A session continuing after a restart cut it off waits for nothing:
+		// it starts with the next pass.
+		if p, ok := pendingResume(st, t.ID); !active[t.ID] && ok && !p.AfterInterrupt {
 			v.WaitingForLimit = true
 		}
 		// A one-shot task that has already run is never due again; the
@@ -1187,6 +1189,14 @@ func resumePending(r store.Run, st *store.State, active map[string]bool) bool {
 	}
 	pending, ok := st.PendingResume(r.TaskID)
 	return ok && r.SessionID != "" && pending.SessionID == r.SessionID
+}
+
+// pendingResume returns the session a task holds waiting to continue, if any.
+func pendingResume(st *store.State, taskID string) (store.PendingResume, bool) {
+	if st == nil {
+		return store.PendingResume{}, false
+	}
+	return st.PendingResume(taskID)
 }
 
 // hasPendingResume reports whether a task holds a session waiting to continue.

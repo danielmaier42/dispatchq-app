@@ -22,6 +22,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"syscall"
 	"time"
 
@@ -235,7 +236,27 @@ func cmdRun(args []string) error {
 	if plat.sleep != nil {
 		eng.SetSleepInhibitor(plat.sleep)
 	}
-	eng.SetNotifier(liveNotifier{st: st, desktop: plat.desktop})
+	notifier := &liveNotifier{st: st, desktop: plat.desktop}
+	// Read once now, so a send that cannot read the settings has the ones
+	// read last to fall back on.
+	if _, err := notifier.Channels(); err != nil {
+		fmt.Fprintf(os.Stderr, "dispatchqd: notify: %v\n", err)
+	}
+	eng.SetNotifier(notifier)
+	// A run whose output stopped reaching DispatchQ (its process outlived the
+	// daemon that started it) gets its outcome from the harness's transcript.
+	eng.SetSessionReader(func(rec store.Run) (provider.Result, bool) {
+		set, err := app.Providers(st)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "dispatchqd: run %s: read its session: %v\n", rec.RunID, err)
+			return provider.Result{}, false
+		}
+		res, ok, err := provider.ReadSessionOutcome(registry, set, rec)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "dispatchqd: run %s: read its session: %v\n", rec.RunID, err)
+		}
+		return res, ok
+	})
 	// A run started in a wake without network fails at once; it waits instead.
 	eng.SetNetworkCheck(engine.LookupHost)
 	// A run's process can outlive the daemon that started it (an update that
@@ -250,7 +271,7 @@ func cmdRun(args []string) error {
 		fmt.Fprintf(os.Stdout, "dispatchqd: took back run %s (%s), still running as process %d\n", r.RunID, r.TaskName, r.PID)
 	}
 	if interrupted > 0 {
-		fmt.Fprintf(os.Stdout, "dispatchqd: reconciled %d interrupted run(s)\n", interrupted)
+		fmt.Fprintf(os.Stdout, "dispatchqd: recorded the end of %d run(s) that ended while no daemon watched them\n", interrupted)
 	}
 	// Each provider's allowance is read without spending any of it: on a
 	// timer, when the dashboard asks, and whenever a run on that account ends.
@@ -428,10 +449,14 @@ type liveNotifier struct {
 	st *store.Store
 	// desktop is the platform's on-screen channel. It is nil when there is none.
 	desktop notify.Notifier
+
+	// last is the settings the latest successful read returned, guarded by mu.
+	mu   sync.Mutex
+	last *store.Settings
 }
 
 // Notify delivers to every channel that is switched on and configured.
-func (l liveNotifier) Notify(ctx context.Context, n notify.Notification) error {
+func (l *liveNotifier) Notify(ctx context.Context, n notify.Notification) error {
 	chans, err := l.Channels()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "dispatchqd: notify: %v\n", err)
@@ -444,16 +469,27 @@ func (l liveNotifier) Notify(ctx context.Context, n notify.Notification) error {
 }
 
 // Channels lists the channels that are switched on and configured, each by
-// name, so the engine can deliver to and retry each on its own. A config that
-// fails to load is reported rather than swallowed: silently falling back to a
-// zero Settings would drop every remote channel with no trace of why, and the
-// engine must not mistake that for the channels being switched off.
-func (l liveNotifier) Channels() ([]notify.Channel, error) {
+// name, so the engine can deliver to and retry each on its own.
+//
+// A config that fails to load (a full disk, a system out of file handles) is
+// reported, never swallowed, so the engine does not mistake it for channels
+// switched off. The channels it returns alongside are the ones the settings
+// read last name: the remote channels are what reaches the operator away from
+// the screen, and an outage of the disk is exactly when they matter. Only
+// before any read succeeded is the desktop all that is known.
+func (l *liveNotifier) Channels() ([]notify.Channel, error) {
 	cfg, err := l.st.LoadConfig()
-	if err != nil {
-		return notifyChannels(l.desktop, store.Settings{}), fmt.Errorf("load config: %w (only the desktop channel is known)", err)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if err == nil {
+		l.last = &cfg.Settings
+		return notifyChannels(l.desktop, cfg.Settings), nil
 	}
-	return notifyChannels(l.desktop, cfg.Settings), nil
+	if l.last != nil {
+		return notifyChannels(l.desktop, *l.last),
+			fmt.Errorf("load config: %w (using the channels of the settings read last)", err)
+	}
+	return notifyChannels(l.desktop, store.Settings{}), fmt.Errorf("load config: %w (only the desktop channel is known)", err)
 }
 
 // notifyChannels assembles the notification channels: the desktop channel

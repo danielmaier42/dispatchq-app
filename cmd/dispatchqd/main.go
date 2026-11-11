@@ -22,6 +22,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"syscall"
 	"time"
 
@@ -221,7 +222,7 @@ func cmdRun(args []string) error {
 	if plat.sleep != nil {
 		eng.SetSleepInhibitor(plat.sleep)
 	}
-	eng.SetNotifier(liveNotifier{st: st, desktop: plat.desktop})
+	eng.SetNotifier(&liveNotifier{st: st, desktop: plat.desktop})
 	// A run's process can outlive the daemon that started it (an update that
 	// kills the old daemon, a crash). Take back every run still going before
 	// the first tick, so it shows as running and its task does not start a
@@ -412,18 +413,38 @@ type liveNotifier struct {
 	st *store.Store
 	// desktop is the platform's on-screen channel. It is nil when there is none.
 	desktop notify.Notifier
+
+	// last is the settings the latest successful read returned, guarded by mu.
+	mu   sync.Mutex
+	last *store.Settings
 }
 
 // Notify delivers to every channel that is switched on and configured. A
-// config that fails to load is reported rather than swallowed: silently
-// falling back to a zero Settings would drop every remote channel from this
-// send (and every send after, until the file is fixed) with no trace of why.
-func (l liveNotifier) Notify(ctx context.Context, n notify.Notification) error {
+// config that fails to load (a full disk, a system out of file handles) is
+// reported, and the send goes out with the settings read last time: the remote
+// channels are what reaches the operator away from the screen, and an outage of
+// the disk is exactly when they matter. Only before any read succeeded does it
+// fall back to the desktop alone.
+func (l *liveNotifier) Notify(ctx context.Context, n notify.Notification) error {
+	return notify.Multi{Notifiers: notifyChannels(l.desktop, l.settings())}.Notify(ctx, n)
+}
+
+// settings returns the current settings, or the last ones read when the config
+// cannot be read now.
+func (l *liveNotifier) settings() store.Settings {
 	cfg, err := l.st.LoadConfig()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dispatchqd: notify: load config: %v (falling back to desktop notifications only)\n", err)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if err == nil {
+		l.last = &cfg.Settings
+		return cfg.Settings
 	}
-	return notify.Multi{Notifiers: notifyChannels(l.desktop, cfg.Settings)}.Notify(ctx, n)
+	if l.last != nil {
+		fmt.Fprintf(os.Stderr, "dispatchqd: notify: load config: %v (sending with the settings read last)\n", err)
+		return *l.last
+	}
+	fmt.Fprintf(os.Stderr, "dispatchqd: notify: load config: %v (falling back to desktop notifications only)\n", err)
+	return store.Settings{}
 }
 
 // notifyChannels assembles the notification channels: the desktop channel

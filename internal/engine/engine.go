@@ -1176,26 +1176,13 @@ func oneShotTrigger(tr task.Trigger) bool {
 // retire clears a task's pending resume and, for a one-shot task, marks it
 // completed and takes it out of the queue — it stays in history and can be
 // replayed from there. Recurring tasks remain queued for their next occurrence.
+// The store tries the write again before giving up; a failure that remains is
+// written to the daemon log, and a one-shot left listed after it was marked
+// done is taken out of the queue at the next start (see Recover).
 func (e *Engine) retire(taskID string, oneShot bool) {
-	_ = e.store.UpdateState(func(st *store.State) error {
-		st.ClearPendingResume(taskID)
-		if oneShot {
-			st.MarkCompletedOnce(taskID)
-		}
-		return nil
-	})
-	if !oneShot {
-		return
+	if err := e.store.RetireTask(taskID, oneShot); err != nil {
+		fmt.Fprintf(os.Stderr, "dispatchqd: retire task %s: %v\n", taskID, err)
 	}
-	_ = e.store.UpdateConfig(func(cfg *store.Config) error {
-		for i := range cfg.Tasks {
-			if cfg.Tasks[i].ID == taskID {
-				cfg.Tasks = append(cfg.Tasks[:i], cfg.Tasks[i+1:]...)
-				break
-			}
-		}
-		return nil
-	})
 }
 
 // logStatus records a run's final status and reason into its log, so the reason
@@ -1376,7 +1363,9 @@ func (e *Engine) finish(t task.Task, providerID string, rec store.Run, res provi
 			fmt.Fprintf(os.Stderr, "dispatchqd: remove log of quiet run %s: %v\n", rec.RunID, err)
 		}
 	} else {
-		_ = e.store.AppendRun(rec)
+		if err := e.store.AppendRun(rec); err != nil {
+			fmt.Fprintf(os.Stderr, "dispatchqd: run %s: record outcome %s: %v\n", rec.RunID, rec.Status, err)
+		}
 
 		// Bound disk usage: prune old runs/logs beyond the configured limit.
 		if cfg, err := e.store.LoadConfig(); err == nil {

@@ -106,7 +106,12 @@ func (e *Engine) alive(pid int, start string) bool {
 // not record its process yet: a run still recorded as running, or one such a
 // daemon already wrote off as interrupted, is matched to an orphaned headless
 // harness process that carries its session id on its command line.
+//
+// Before that it puts right what an earlier daemon could not finish writing:
+// run records history did not take are written now, and one-shot tasks marked
+// done but left in the queue are taken out of it. Both are logged.
 func (e *Engine) Recover() (adopted []store.Run, interrupted int, err error) {
+	e.repairRecords()
 	st, err := e.store.LoadState()
 	if err != nil {
 		return nil, 0, fmt.Errorf("load state: %w", err)
@@ -200,6 +205,24 @@ func (e *Engine) Recover() (adopted []store.Run, interrupted int, err error) {
 		adopted = append(adopted, rec)
 	}
 	return adopted, interrupted, nil
+}
+
+// repairRecords writes the run records an earlier process kept back because
+// history did not take them, and removes the one-shot tasks a failed queue
+// write left listed after they had run. Neither failing stops the start.
+func (e *Engine) repairRecords() {
+	if n, err := e.store.ReplayPendingRuns(); err != nil {
+		fmt.Fprintf(os.Stderr, "dispatchqd: write kept run records to history: %v\n", err)
+	} else if n > 0 {
+		fmt.Fprintf(os.Stdout, "dispatchqd: wrote %d run record(s) to history that an earlier write could not\n", n)
+	}
+	removed, err := e.store.RepairCompletedOneShots()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dispatchqd: %v\n", err)
+	}
+	for _, t := range removed {
+		fmt.Fprintf(os.Stdout, "dispatchqd: removed task %s (%s) from the queue: it had already run, but was still listed\n", t.ID, t.Name)
+	}
 }
 
 // legacyCandidate reports whether r may belong to a process that a daemon

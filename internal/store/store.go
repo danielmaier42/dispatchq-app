@@ -43,6 +43,15 @@ type Store struct {
 	home    string
 	mu      sync.Mutex // guards individual file reads/writes
 	writeMu sync.Mutex // serializes read-modify-write updates
+
+	// pending are the run records history has not taken yet, oldest first, and
+	// marked the run ids whose fallback file is on disk (see durable.go). Both
+	// are guarded by mu.
+	pending []Run
+	marked  map[string]bool
+	// sleep waits between the attempts of a failed write; nil is time.Sleep.
+	// Tests replace it so a retry costs no wall-clock time.
+	sleep func(time.Duration)
 }
 
 // DefaultHome resolves the data directory: the [HomeOverride] if set, otherwise
@@ -268,27 +277,29 @@ func (s *Store) UpdateState(fn func(*State) error) error {
 
 // AppendRun appends a run event to history.jsonl. Later events for the same
 // run id supersede earlier ones (see Runs).
+//
+// A record history does not take is not lost: the write is tried again a few
+// times, and if it still fails the record is kept, in memory and in a small
+// file under runs/, written ahead of the next record and replayed by the next
+// start (see ReplayPendingRuns). Runs reports it in the meantime. The returned
+// error says the record is late, not gone.
 func (s *Store) AppendRun(r Run) error {
-	line, err := json.Marshal(r)
-	if err != nil {
+	if _, err := json.Marshal(r); err != nil {
 		return fmt.Errorf("encode run: %w", err)
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	f, err := os.OpenFile(s.path(historyFile), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return fmt.Errorf("open history: %w", err)
+	s.queueLocked(r)
+	err := s.retry(s.flushLocked)
+	if err == nil {
+		return nil
 	}
-	if _, err := f.Write(append(line, '\n')); err != nil {
-		_ = f.Close()
-		return fmt.Errorf("write history: %w", err)
+	if merr := s.markLocked(); merr != nil {
+		return fmt.Errorf("%w; the record could not be kept for later either: %w", err, merr)
 	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("close history: %w", err)
-	}
-	return nil
+	return fmt.Errorf("%w; the record is kept in %s and written to history later", err, s.pendingPath(r.RunID))
 }
 
 // AppendRunLog appends a line to a run's log file (used to record the final
@@ -311,35 +322,45 @@ func (s *Store) Runs() ([]Run, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	f, err := os.Open(s.path(historyFile))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("open history: %w", err)
-	}
-	defer func() { _ = f.Close() }()
-
 	latest := map[string]Run{}
 	var order []string
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(line) == 0 {
-			continue
+	f, err := os.Open(s.path(historyFile))
+	switch {
+	case errors.Is(err, os.ErrNotExist):
+		if len(s.pending) == 0 {
+			return nil, nil
 		}
-		var r Run
-		if err := json.Unmarshal(line, &r); err != nil {
-			return nil, fmt.Errorf("parse history line: %w", err)
+	case err != nil:
+		return nil, fmt.Errorf("open history: %w", err)
+	default:
+		defer func() { _ = f.Close() }()
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for sc.Scan() {
+			line := sc.Bytes()
+			if len(line) == 0 {
+				continue
+			}
+			var r Run
+			if err := json.Unmarshal(line, &r); err != nil {
+				return nil, fmt.Errorf("parse history line: %w", err)
+			}
+			if _, seen := latest[r.RunID]; !seen {
+				order = append(order, r.RunID)
+			}
+			latest[r.RunID] = r
 		}
+		if err := sc.Err(); err != nil {
+			return nil, fmt.Errorf("read history: %w", err)
+		}
+	}
+
+	// A record still waiting for history is newer than anything in it.
+	for _, r := range s.pending {
 		if _, seen := latest[r.RunID]; !seen {
 			order = append(order, r.RunID)
 		}
 		latest[r.RunID] = r
-	}
-	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("read history: %w", err)
 	}
 
 	out := make([]Run, 0, len(order))

@@ -467,6 +467,14 @@ explains it.
 - **File-access prompts up front.** Task folders are read at login and on
   edit, so macOS asks for Documents access while you are present.
 - **Bounded history.** Old runs are pruned to a configurable count.
+- **No run record is lost to a bad moment on disk.** A write to history, or the
+  write that takes a finished one-shot task out of the queue, is tried again
+  for a few seconds before it counts as failed. A run record history still
+  refuses is kept in `runs/<run-id>.pending.json`, written to history ahead of
+  the next record, and at the latest at the next daemon start (`wrote N run
+  record(s) to history …` in the daemon log). A one-shot task that ran but was
+  left in the queue is taken out of it at the next start (`removed task … from
+  the queue` in the daemon log).
 
 **Seeing what happened**
 
@@ -476,7 +484,10 @@ explains it.
   template. Failures always notify, successes only if the task opts in. Every
   notification also lands in the app's **Notifications** view, and clicking the
   macOS banner marks it read there and opens what it is about — the artifact,
-  the run's log, the link.
+  the run's log, the link. When `config.toml` cannot be read at the moment a
+  notification goes out (a full disk, a system out of file handles), it is sent
+  with the channels read last time instead of to the desktop alone; the daemon
+  log says so.
 - **Full history** of every run with its complete log as a chat transcript or
   raw output, and replay.
 - **Continue in Chat…** opens Terminal in the task's folder and resumes the
@@ -2193,6 +2204,7 @@ environment variable):
 | `config.toml` | Global settings, the configured [providers](#providers) and [pools](#provider-pools), and the ordered task list — the order is the priority, and tasks of one group sit together in it (human-readable, versionable). No credentials: a provider entry holds its CLI's path and configuration directory, never what is inside them. |
 | `history.jsonl` | Append-only index of every run (except a quiet-history task's successful ones, which are never written). Scripts read it through `dispatchq status --all --json`. |
 | `runs/<run-id>.log` | Full log for each run. |
+| `runs/<run-id>.pending.json` | Only after a failed write: a run's record that history did not take yet. The daemon writes it to history at the next chance and removes the file. |
 | `artifacts.json` | Index of published artifacts (title, source task/run, its group and parent job, file name, size, type). |
 | `artifacts/<id>/<file>` | The published files themselves (snapshots copied at publish time). |
 | `notifications.json` | Outbox of notifications sent with `dispatchq notify`, waiting for the daemon to deliver them (normally empty). |

@@ -671,8 +671,8 @@ first. The window opens on the Dashboard:
   filter also shows as a chip next to it, × removes that one, and **Reset** in
   the popover clears them all. A *quiet history* task's successful runs are
   hidden: the list shows its runs that did not succeed (and the one in flight)
-  without any filter, and **Show hidden runs** adds the successes of the last
-  48 hours, each marked **Hidden** with an eye icon. The switch is temporary:
+  without any filter, and **Show hidden runs** adds the successes still kept
+  (up to 48 hours, see [Quiet history](#quiet-history-for-frequent-jobs)), each marked **Hidden** with an eye icon. The switch is temporary:
   it holds while the window stays open (like the other filters, it survives a
   trip to another view) and is off again after a reload or a restart.
 - **Artifacts** — files your tasks published, newest first.

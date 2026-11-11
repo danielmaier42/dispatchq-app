@@ -90,7 +90,7 @@ export function LogToolbar({f, menus}: {f: LogFilters; menus: FilterMenus}) {
         </Field>
         <Field
           label="Hidden runs"
-          hint="Successful runs of quiet-history tasks, kept for 48 hours. Hidden again when the window reloads."
+          hint="Successful runs of quiet-history tasks, kept for up to 48 hours. Hidden again when the window reloads."
         >
           <label className="flex cursor-pointer items-center justify-between gap-3 text-[13px]">
             Show hidden runs

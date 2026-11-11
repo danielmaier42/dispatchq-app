@@ -86,7 +86,8 @@ func (s *Store) PruneQuietRuns(now time.Time) error {
 }
 
 // readHistoryLocked reads history.jsonl collapsed to the latest event per run
-// id, with the run ids in first-seen order. The caller holds s.mu.
+// id, with the run ids in first-seen order; a nil map means there is no
+// history file yet. The caller holds s.mu.
 func (s *Store) readHistoryLocked() (map[string]Run, []string, error) {
 	f, err := os.Open(s.path(historyFile))
 	if errors.Is(err, os.ErrNotExist) {

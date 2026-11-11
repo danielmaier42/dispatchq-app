@@ -12,7 +12,6 @@
 package store
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
@@ -311,37 +310,13 @@ func (s *Store) Runs() ([]Run, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	f, err := os.Open(s.path(historyFile))
-	if errors.Is(err, os.ErrNotExist) {
+	latest, order, err := s.readHistoryLocked()
+	if err != nil {
+		return nil, err
+	}
+	if latest == nil { // no history file yet
 		return nil, nil
 	}
-	if err != nil {
-		return nil, fmt.Errorf("open history: %w", err)
-	}
-	defer func() { _ = f.Close() }()
-
-	latest := map[string]Run{}
-	var order []string
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-		var r Run
-		if err := json.Unmarshal(line, &r); err != nil {
-			return nil, fmt.Errorf("parse history line: %w", err)
-		}
-		if _, seen := latest[r.RunID]; !seen {
-			order = append(order, r.RunID)
-		}
-		latest[r.RunID] = r
-	}
-	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("read history: %w", err)
-	}
-
 	out := make([]Run, 0, len(order))
 	for _, id := range order {
 		out = append(out, latest[id])
@@ -430,38 +405,10 @@ func (s *Store) PruneHistory(limit int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	f, err := os.Open(s.path(historyFile))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
+	latest, order, err := s.readHistoryLocked()
 	if err != nil {
-		return fmt.Errorf("open history: %w", err)
+		return err
 	}
-	latest := map[string]Run{}
-	var order []string
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-		var r Run
-		if err := json.Unmarshal(line, &r); err != nil {
-			_ = f.Close()
-			return fmt.Errorf("parse history line: %w", err)
-		}
-		if _, seen := latest[r.RunID]; !seen {
-			order = append(order, r.RunID)
-		}
-		latest[r.RunID] = r
-	}
-	scErr := sc.Err()
-	_ = f.Close()
-	if scErr != nil {
-		return fmt.Errorf("read history: %w", scErr)
-	}
-
 	var counted []string
 	for _, id := range order {
 		if !latest[id].Quiet {

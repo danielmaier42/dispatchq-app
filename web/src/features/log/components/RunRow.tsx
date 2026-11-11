@@ -77,7 +77,7 @@ export function RunRow({
               <span className="text-subtle-foreground" aria-hidden>
                 ·
               </span>
-              <Tooltip content="A routine success of a quiet-history task. It shows only while Show hidden runs is on and is kept for 48 hours.">
+              <Tooltip content="A routine success of a quiet-history task. It shows only while Show hidden runs is on and is kept for up to 48 hours.">
                 <span className="inline-flex shrink-0 items-center gap-1">
                   <EyeOff className="size-3" aria-label="Hidden" />
                   <span className="hidden @md/run:inline">Hidden</span>

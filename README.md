@@ -2236,8 +2236,11 @@ for example `notification "DispatchQ ✗ nightly failed" accepted by pushover
 a server error, a rate limit) is tried again after 30 seconds, then with
 doubling pauses up to 5 minutes, and at once after the Mac wakes or the
 network is back, also across a daemon restart. For two minutes after a wake
-every check tries again, and a try that fails on the network then does not
-lengthen the pause, since Wi-Fi often comes up a little after the Mac. While
+a try that fails on the network does not lengthen the pause and comes back
+after 30 seconds, since Wi-Fi often comes up a little after the Mac; a rate
+limit or server error keeps its pause. A failure streak's reminder replaces
+whatever still waits of the streak's earlier push, so the phone gets the
+latest count once. While
 `config.toml` cannot be read, a notification goes to the desktop and is
 queued for the remote channels that were on before. An error names the
 service's host, never the full URL (for a Slack or Discord webhook the URL is

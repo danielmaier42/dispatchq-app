@@ -132,7 +132,7 @@ func TestUndeliveredPushIsRetriedUntilTheNetworkIsBack(t *testing.T) {
 	if got := len(chans.desktop.received()); got != 1 {
 		t.Fatalf("desktop shown %d times, want once", got)
 	}
-	if !strings.Contains(out.String(), `notification "DispatchQ ✗ watch failed" accepted by pushover (receipt req-1) on try 3`) {
+	if !strings.Contains(out.String(), `notification "DispatchQ ✗ watch failed" accepted by pushover (receipt req-1) on a retry, 1h0m45s after it was raised`) {
 		t.Fatalf("delivery log = %q", out.String())
 	}
 }
@@ -326,24 +326,25 @@ func TestSweepWorksOnTheOutboxAsItIsAfterTheClaim(t *testing.T) {
 	})
 }
 
-// A delivery still waiting is not replaced by a later one of the same inbox
-// notification (a failure streak's reminder repeats its inbox id).
-func TestReminderDoesNotReplaceAWaitingDelivery(t *testing.T) {
+// A newer send of the same inbox notification (a failure streak's reminder)
+// supersedes what still waits of the older one, under its own key.
+func TestReminderSupersedesTheWaitingDelivery(t *testing.T) {
 	fc := clock.NewFake(time.Date(2026, 11, 9, 3, 15, 0, 0, time.UTC))
 	e, st, chans, _, _ := newDeliveryEngine(t, fc)
 	chans.phone.fail(errNoDNS)
 	n := notify.Notification{ID: "i-streak", Title: "first"}
 	e.deliver(n, fc.Now())
+	first := pending(t, st)
 	n.Title = "reminder"
 	e.deliver(n, fc.Now())
-	var phone []string
+	var phone []store.PendingDelivery
 	for _, d := range pending(t, st) {
 		if d.Channel == "pushover" {
-			phone = append(phone, deliveryTitle(d))
+			phone = append(phone, d)
 		}
 	}
-	if len(phone) != 2 {
-		t.Fatalf("waiting pushover deliveries = %q, want both", phone)
+	if len(phone) != 1 || deliveryTitle(phone[0]) != "reminder" || phone[0].ID == first[0].ID {
+		t.Fatalf("waiting pushover deliveries = %+v, want only the reminder under a new key", phone)
 	}
 }
 
@@ -366,22 +367,48 @@ func TestUnreadableSettingsQueueTheKnownRemoteChannels(t *testing.T) {
 	}
 }
 
-// Right after a wake the network is often not up yet: tries that fail then do
-// not count, so the next ones are not minutes away.
-func TestFailedTriesRightAfterAWakeDoNotCount(t *testing.T) {
+// Right after a wake the network is often not up yet: tries that fail on the
+// network then do not count, and come back after the shortest pause.
+func TestNetworkFailuresRightAfterAWakeDoNotCount(t *testing.T) {
 	fc := clock.NewFake(time.Date(2026, 11, 9, 3, 15, 0, 0, time.UTC))
 	e, st, chans, _, _ := newDeliveryEngine(t, fc)
 	chans.phone.fail(errNoDNS)
 	e.send(notify.Notification{Title: "x"})
+	e.sweepDeliveries(true)
+	e.WaitIdle()
 	for range 3 {
-		fc.Advance(10 * time.Second)
-		e.sweepDeliveries(true)
+		fc.Advance(DeliveryFirstRetry)
+		e.sweepDeliveries(false)
 		e.WaitIdle()
 	}
-	if list := pending(t, st); len(list) != 1 || list[0].Attempts != 1 || list[0].NextTry.After(fc.Now()) {
-		t.Fatalf("outbox = %+v, want the wake tries uncounted and the entry due", list)
+	list := pending(t, st)
+	if len(list) != 1 || list[0].Attempts != 1 || !list[0].NextTry.Equal(fc.Now().Add(DeliveryFirstRetry)) {
+		t.Fatalf("outbox = %+v, want the wake tries uncounted and the next one 30s away", list)
 	}
-	if got := len(chans.phone.received()); got != 4 {
-		t.Fatalf("pushover tried %d times, want the send and three wake sweeps", got)
+	if got := len(chans.phone.received()); got != 5 {
+		t.Fatalf("pushover tried %d times, want the send and four tries in the grace", got)
+	}
+	// A refusal keeps its backoff even then: a rate limit is not hammered.
+	chans.phone.fail(&notify.StatusError{Channel: "pushover", Code: 429})
+	fc.Advance(DeliveryFirstRetry)
+	e.sweepDeliveries(false)
+	e.WaitIdle()
+	if list := pending(t, st); list[0].Attempts != 2 {
+		t.Fatalf("outbox = %+v, want the rate-limited try counted", list)
+	}
+}
+
+// Right after a start the daemon has sent nothing yet; it still knows which
+// remote channels to queue for when the settings cannot be read.
+func TestRemoteChannelsAreKnownFromTheStart(t *testing.T) {
+	fc := clock.NewFake(time.Date(2026, 11, 9, 3, 15, 0, 0, time.UTC))
+	e, st, chans, _, _ := newDeliveryEngine(t, fc)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_ = e.Loop(ctx, time.Hour)
+	chans.broken = true
+	e.send(notify.Notification{Title: "first after the start"})
+	if list := pending(t, st); len(list) != 1 || list[0].Channel != "pushover" {
+		t.Fatalf("outbox = %+v, want the pushover delivery queued", list)
 	}
 }

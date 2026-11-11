@@ -127,3 +127,24 @@ func TestOSAScriptFileChooserCancel(t *testing.T) {
 		t.Fatalf("cancel = (%q, %v, %v), want nothing chosen and no error", path, chosen, err)
 	}
 }
+
+func TestExistingDirWalksUpFromAPathThroughAFile(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "watch.sh")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := existingDir(filepath.Join(file, "old")); got != dir {
+		t.Fatalf("existingDir = %q, want %q: a path through a file does not exist", got, dir)
+	}
+}
+
+func TestOSAScriptDialogTimeoutIsNoAnswer(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	fr := &fakeRunner{err: errors.New("signal: killed")}
+	_, chosen, err := OSAScriptFileChooser(fr)(ctx, "p", "")
+	if chosen || err == nil || !strings.Contains(err.Error(), "no answer in time") {
+		t.Fatalf("timed-out dialog = (%v, %v), want a no-answer error", chosen, err)
+	}
+}

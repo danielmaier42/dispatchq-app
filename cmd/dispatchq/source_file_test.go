@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/danielmaier42/claudeq/internal/app"
 	"github.com/danielmaier42/claudeq/internal/task"
 )
 
@@ -40,8 +41,10 @@ func TestAddWithSourceFileStoresTheAbsolutePathOnly(t *testing.T) {
 
 func TestEditSwitchesBetweenInlineAndFile(t *testing.T) {
 	st := newTestStore(t)
-	if err := cmdAdd(st, []string{"--id", "nightly", "--prompt", "old prompt", "--dir", t.TempDir()}); err != nil {
-		t.Fatalf("cmdAdd: %v", err)
+	// Filed directly: adding an agent job through cmdAdd would check that a
+	// provider is installed, which is not what this test is about.
+	if err := app.AddTask(st, baseTask()); err != nil {
+		t.Fatalf("AddTask: %v", err)
 	}
 	brief := filepath.Join(t.TempDir(), "brief.md")
 	if err := cmdEdit(st, []string{"nightly", "--source-file", brief}); err != nil {

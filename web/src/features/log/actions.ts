@@ -11,8 +11,11 @@ import type {Run, RunDetail} from '@/lib/types'
 
 const runPath = (id: string) => `/api/runs/${encodeURIComponent(id)}`
 
+// Both lists get the patch: the Log reads the one with hidden runs while
+// Show hidden runs is on.
 function patchRun(id: string, patch: Partial<Run>) {
-  queryClient.setQueryData<Run[]>(keys.runs, (rs) => rs?.map((r) => (r.run_id === id ? {...r, ...patch} : r)))
+  for (const key of [keys.runs, keys.runsWithHidden])
+    queryClient.setQueryData<Run[]>(key, (rs) => rs?.map((r) => (r.run_id === id ? {...r, ...patch} : r)))
   queryClient.setQueryData<RunDetail>(keys.run(id), (r) => (r ? {...r, ...patch} : r))
 }
 

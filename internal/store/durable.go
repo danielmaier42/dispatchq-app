@@ -62,13 +62,19 @@ func transient(err error) bool {
 
 // appendRun is AppendRun's work: it queues r (only on the first attempt) and
 // writes everything waiting.
+// The cross-process lock keeps the append out of another process's rewrite of
+// history (PruneHistory, PruneQuietRuns), which would otherwise replace the
+// file with a copy that lacks it, and lets a failed write cut back only its
+// own bytes.
 func (s *Store) appendRun(r Run, first bool) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if first {
-		s.queueLocked(r)
-	}
-	return s.flushLocked()
+	return s.withWriteLock(func() error {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if first {
+			s.queueLocked(r)
+		}
+		return s.flushLocked()
+	})
 }
 
 // keepRun writes the fallback file of every record still waiting, after the

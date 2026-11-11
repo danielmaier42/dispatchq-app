@@ -42,7 +42,7 @@ export function AdvancedSection({
           <ToggleRow
             id="te-quiet"
             label="Quiet history"
-            description="Drop successful runs from the Log; failures are kept. For frequent watcher jobs."
+            description="Hide successful runs from the Log (Show hidden runs brings back the last 48 hours); failures show as usual. For frequent watcher jobs."
             checked={form.quietHistory}
             onCheckedChange={(v) => update({quietHistory: v})}
           />

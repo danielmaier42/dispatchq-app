@@ -203,8 +203,8 @@ type Engine struct {
 	canceled  map[string]bool               // runID -> user requested cancellation
 	takeovers map[string]chan store.Run     // runID -> waits for the record of a run taken over by hand
 	// inflight is the start record of every run in flight, by run id. A
-	// quiet-history run has no history entry until it ends (and none at all
-	// when it succeeds), so this is the only place it can be seen running.
+	// quiet-history run has no history entry until it ends, so this is the
+	// only place it can be seen running.
 	inflight          map[string]store.Run
 	nonParallelActive int
 	parallelActive    int
@@ -233,6 +233,9 @@ type Engine struct {
 	deliveryErrLog  io.Writer
 	lastDeliveryErr string
 	lastChannelsErr string
+	// afterOutboxRead, when set (tests), runs between a retry sweep's read of
+	// the outbox and its claim, which is where a concurrent send can settle.
+	afterOutboxRead func()
 	// alerts holds the in-memory notification episodes: provider pauses
 	// (see alerts.go). Failure streaks are kept on disk instead.
 	alerts alerts
@@ -961,8 +964,8 @@ func (e *Engine) launchTask(t task.Task, settings store.Settings, resolved provi
 	}
 	// Record the start before marking the task active, so a failure here leaves
 	// no task stuck in the running set (which would block the scheduler). A
-	// quiet-history task is the exception: its runs enter history only if they
-	// end in something worth seeing (see finish), so nothing is written now.
+	// quiet-history task is the exception: its runs enter history only when they
+	// end (see finish), so nothing is written now.
 	// The caller holds e.mu, which finishing runs and the API wait on, so the
 	// start gets one attempt and no pauses. A start history refuses is not
 	// kept for later either: the run does not start, and a record of it
@@ -1396,25 +1399,26 @@ func (e *Engine) finish(t task.Task, providerID string, rec store.Run, res provi
 	delete(e.active, t.ID)
 	e.mu.Unlock()
 
-	if quietDrop(t, rec.Status) {
-		// A quiet task's routine tick leaves no trace: the run was never
-		// recorded (see launchTask), and its log goes too.
-		if err := os.Remove(rec.LogPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			fmt.Fprintf(os.Stderr, "dispatchqd: remove log of quiet run %s: %v\n", rec.RunID, err)
-		}
-	} else {
-		if err := e.store.AppendRun(rec); err != nil {
-			fmt.Fprintf(os.Stderr, "dispatchqd: run %s: record outcome %s: %v\n", rec.RunID, rec.Status, err)
-		}
+	// A quiet task's routine tick is recorded as quiet: kept briefly, out of
+	// the default Log and never unread (see store.Run.Quiet). Only a success
+	// is; every other outcome is recorded like any other run's.
+	rec.Quiet = quietSuccess(t, rec.Status)
+	if err := e.store.AppendRun(rec); err != nil {
+		fmt.Fprintf(os.Stderr, "dispatchqd: run %s: record outcome %s: %v\n", rec.RunID, rec.Status, err)
+	}
 
-		// Bound disk usage: prune old runs/logs beyond the configured limit.
-		if cfg, err := e.store.LoadConfig(); err == nil {
-			_ = e.store.PruneHistory(cfg.Settings.RunHistoryLimit())
-		}
+	// Bound disk usage: drop expired quiet runs first, then prune old
+	// runs/logs beyond the configured limit, which quiet runs do not count
+	// against.
+	if err := e.store.PruneQuietRuns(finished); err != nil {
+		fmt.Fprintf(os.Stderr, "dispatchqd: prune quiet runs: %v\n", err)
+	}
+	if cfg, err := e.store.LoadConfig(); err == nil {
+		_ = e.store.PruneHistory(cfg.Settings.RunHistoryLimit())
+	}
 
-		if rec.Status != store.StatusSuccess {
-			e.logStatus(rec)
-		}
+	if rec.Status != store.StatusSuccess {
+		e.logStatus(rec)
 	}
 
 	if takeover != nil {
@@ -1458,23 +1462,19 @@ func clipOutput(s string) (string, bool) {
 	return s[:cut], true
 }
 
-// quietDrop reports whether a run of a quiet-history task leaves history
-// alone. Only a success does: it is the routine tick the setting exists to
-// silence. Failures, auth problems, cancellations and rate-limit pauses are
-// the outcomes the operator needs to see, so those are recorded like any other
-// run's.
+// quietSuccess reports whether a run of a quiet-history task is its routine
+// tick: a success, which the setting exists to keep out of the way. Failures,
+// auth problems, cancellations and rate-limit pauses are the outcomes the
+// operator needs to see, so those are recorded like any other run's.
 //
-// A pause is kept even though the daemon resumes it by itself, because it is
-// not a finished run: it closes the provider's gate and holds up every other
-// task on that provider, possibly for days when a weekly allowance is what ran
-// out. Dropping it left the queue stopped with a banner and nothing in
-// the Log to explain it, and with no entry there was nowhere to cancel the
+// A pause counts as one of those even though the daemon resumes it by itself,
+// because it is not a finished run: it closes the provider's gate and holds up
+// every other task on that provider, possibly for days when a weekly allowance
+// is what ran out. Hiding it left the queue stopped with a banner and nothing
+// in the Log to explain it, and with no entry there was nowhere to cancel the
 // resume either.
-func quietDrop(t task.Task, status store.RunStatus) bool {
-	if !t.QuietHistory {
-		return false
-	}
-	return status == store.StatusSuccess
+func quietSuccess(t task.Task, status store.RunStatus) bool {
+	return t.QuietHistory && status == store.StatusSuccess
 }
 
 // noteErr logs a recurring failure once: err is written to stderr only when it
@@ -1532,6 +1532,14 @@ func (e *Engine) ActiveTaskIDs() []string {
 // plans the next wake (if a Waker is set), so the machine can sleep between runs
 // and be woken when the next task is due (PLAN.md D8).
 func (e *Engine) Loop(ctx context.Context, interval time.Duration) error {
+	// Learn the channels once up front, so a send while the settings cannot
+	// be read knows the remote channels to queue for even right after a
+	// start (see deliver).
+	if e.notifier != nil {
+		if _, err := e.channels(); err != nil {
+			fmt.Fprintln(e.deliveryErrLog, "dispatchqd: notify:", err)
+		}
+	}
 	var last time.Time
 	for {
 		// A tick that comes much later than planned means the machine slept:

@@ -191,6 +191,8 @@ function findNewRun(taskId: string, since: number): Promise<string | undefined> 
       try {
         const runs = await get<Run[]>('/api/runs')
         queryClient.setQueryData(keys.runs, runs)
+        // The Log may be showing hidden runs too; that list catches up now as well.
+        void queryClient.invalidateQueries({queryKey: keys.runsWithHidden})
         const run = runs.find(
           (r) => r.task_id === taskId && new Date(r.started_at).getTime() >= since - 2_000,
         )

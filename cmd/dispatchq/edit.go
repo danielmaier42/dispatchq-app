@@ -201,7 +201,7 @@ func (s *taskSettings) register(fs *flag.FlagSet, dflt string) {
 	fs.BoolVar(&s.parallel, "parallel", false, "allow running alongside other parallel tasks (default: "+dflt+")")
 	fs.BoolVar(&s.skipPerms, "skip-permissions", false, "bypass permission prompts (default: "+dflt+")")
 	fs.BoolVar(&s.notify, "notify", false, "notify on the run's result, not just failures (default: "+dflt+")")
-	fs.BoolVar(&s.quietHistory, "quiet-history", false, "drop successful runs from history (default: "+dflt+")")
+	fs.BoolVar(&s.quietHistory, "quiet-history", false, "hide successful runs from the Log and status (default: "+dflt+")")
 	fs.BoolVar(&s.backfill, "backfill", false, "run only while the provider's weekly allowance would otherwise go unused (default: "+dflt+")")
 }
 
@@ -456,7 +456,7 @@ const taskDocHeader = `# dispatchq task — edit, save, and close this file to a
 #   model              empty = the provider's own default model
 #   reasoning_effort   empty = the provider's own; ignored by providers without it
 #   permissions        default | skip  (skip bypasses permission prompts)
-#   quiet_history      true drops successful runs from history (frequent watcher jobs)
+#   quiet_history      true hides successful runs from the Log (frequent watcher jobs)
 #   backfill           true runs only while the provider's weekly allowance would
 #                      otherwise go unused (urgency above dispatchq settings
 #                      --backfill-urgency); never for a script job

@@ -462,12 +462,14 @@ func MarkRead(s *store.Store, runID string) error {
 }
 
 // MarkAllRead marks every recorded run as read (FA-24), and every run-outcome
-// notification with them.
+// notification with them. Quiet runs are left out: they are never unread, and
+// noting each watcher tick as read would only grow state.json.
 func MarkAllRead(s *store.Store) error {
 	runs, err := s.Runs()
 	if err != nil {
 		return err
 	}
+	runs = store.VisibleRuns(runs)
 	ids := make([]string, len(runs))
 	for i, r := range runs {
 		ids[i] = r.RunID

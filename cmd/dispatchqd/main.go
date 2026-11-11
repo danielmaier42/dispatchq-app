@@ -176,6 +176,12 @@ func cmdRun(args []string) error {
 
 	if cfg, err := st.LoadConfig(); err == nil {
 		_ = st.PruneHistory(cfg.Settings.RunHistoryLimit())
+		// Hidden runs expire by age, so a quiet watcher that stopped running
+		// does not leave its last two days behind for good. At startup every
+		// expired one goes, batch or not.
+		if err := st.PruneAllQuietRuns(time.Now()); err != nil {
+			fmt.Fprintln(os.Stderr, "dispatchqd: prune quiet runs:", err)
+		}
 		// Say it out loud: a daemon that starts nothing all night looks broken
 		// otherwise, and the log is the only place to look.
 		if cfg.Settings.Paused {

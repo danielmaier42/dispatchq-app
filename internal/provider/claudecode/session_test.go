@@ -25,6 +25,7 @@ const (
 	// A real limit line, as Claude Code wrote it on 2026-11-09.
 	tLimit    = `{"type":"assistant","isSidechain":false,"isApiErrorMessage":true,"timestamp":"2026-11-10T09:00:01Z","error":"rate_limit","apiError":"usage_limit_reached","apiErrorStatus":429,"apiErrorParams":{"rate_limit_info":{"status":"rejected","resetsAt":1794222000,"rateLimitType":"five_hour"}},"quotaLimits":{"status":"rejected","resetsAt":1794222000},"message":{"id":"e2","model":"<synthetic>","stop_reason":"stop_sequence","content":[{"type":"text","text":"You've hit your 5-hour limit · resets 12pm (Europe/Berlin)"}]}}`
 	tAuth     = `{"type":"assistant","isSidechain":false,"isApiErrorMessage":true,"timestamp":"2026-11-10T09:00:01Z","error":"authentication_failed","apiErrorStatus":401,"message":{"id":"e3","model":"<synthetic>","stop_reason":"stop_sequence","content":[{"type":"text","text":"Invalid API key · Please run /login"}]}}`
+	tOrgBlock = `{"type":"assistant","isSidechain":false,"isApiErrorMessage":true,"timestamp":"2026-11-10T09:00:01Z","error":"authentication_failed","apiError":"oauth_not_allowed_for_organization","apiErrorStatus":401,"message":{"id":"e4","model":"<synthetic>","stop_reason":"stop_sequence","content":[{"type":"text","text":"Your organization has disabled Claude subscription access for Claude Code"}]}}`
 	tAPIError = `{"type":"assistant","isSidechain":false,"isApiErrorMessage":true,"timestamp":"2026-11-10T09:00:01Z","message":{"id":"e1","model":"<synthetic>","stop_reason":"stop_sequence","content":[{"type":"text","text":"API Error: 500 Internal server error"}]}}`
 )
 
@@ -66,6 +67,9 @@ func TestSessionOutcome(t *testing.T) {
 		{name: "login problem", lines: []string{tPrompt, tAuth}, since: started,
 			ok: true, status: store.StatusAuthError, output: "Invalid API key · Please run /login",
 			message: "Invalid API key · Please run /login"},
+		{name: "organisation block", lines: []string{tPrompt, tOrgBlock}, since: started,
+			ok: true, status: store.StatusRateLimited, output: "Your organization has disabled Claude subscription access for Claude Code",
+			message: orgBlockedDetail},
 		{name: "answer belongs to an earlier run", lines: []string{tPrompt, tThinking, tAnswer},
 			since: time.Date(2026, 11, 10, 10, 0, 0, 0, time.UTC)},
 		{name: "no transcript", since: started},
@@ -92,7 +96,7 @@ func TestSessionOutcome(t *testing.T) {
 			if want := time.Date(2026, 11, 10, 9, 0, 1, 0, time.UTC); !res.EndedAt.Equal(want) {
 				t.Fatalf("ended at %v, want the answer's time %v", res.EndedAt, want)
 			}
-			if tc.status == store.StatusRateLimited && !res.ResetAt.Equal(time.Unix(1794222000, 0)) {
+			if tc.name == "rate limit" && !res.ResetAt.Equal(time.Unix(1794222000, 0)) {
 				t.Fatalf("reset at %v, want the window the limit line names", res.ResetAt)
 			}
 			if res.SessionID != "s1" {

@@ -29,6 +29,7 @@ type transcriptLine struct {
 	// An API error line names the error the way the stream does, plus the
 	// rate-limit window when it was a limit.
 	Error          string `json:"error"`
+	APIErrorCode   string `json:"apiError"`
 	APIErrorStatus *int   `json:"apiErrorStatus"`
 	APIErrorParams struct {
 		RateLimitInfo *rateLimitInfo `json:"rate_limit_info"`
@@ -110,7 +111,7 @@ func (a *Adapter) SessionOutcome(inst provider.Instance, sessionID string, since
 		}
 		c.AddAll((&parser{}).events(streamEvent{
 			Type: "result", IsError: true, ResultText: answer,
-			Error: last.Error, APIErrorStatus: last.APIErrorStatus, RateLimitInfo: limit,
+			Error: last.Error, APIErrorCode: last.APIErrorCode, APIErrorStatus: last.APIErrorStatus, RateLimitInfo: limit,
 		}))
 		c.Add(provider.Event{Type: provider.EventFailed, Detail: answer})
 	case last.Message.StopReason == "end_turn" || last.Message.StopReason == "stop_sequence":

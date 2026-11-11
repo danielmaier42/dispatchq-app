@@ -465,8 +465,9 @@ explains it.
   its next run continues the same session, so the model sees what it already
   did. It is not handed the task's prompt again but told that it was cut off,
   to check what is already done and finish only what is missing. The run's
-  reason says so, and so does a note in the next run's log. Cut off a second
-  time, even after a limit paused the continuation, the task is retired. A
+  reason says so, and so does a note in the next run's log. A limit that
+  pauses the continuation turns it into an ordinary limit resume. Cut off a
+  second time, even after such a pause, the task is retired. A
   task deleted meanwhile is not continued.
   Recurring tasks start their next occurrence fresh as before, and scripts
   are not continued.

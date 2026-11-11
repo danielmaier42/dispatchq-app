@@ -254,3 +254,30 @@ func TestNoContinuationForATaskNoLongerQueued(t *testing.T) {
 		t.Fatal("a continuation was planned for a task that is no longer queued")
 	}
 }
+
+// The review finding: a run that completed and was retired, but whose removal
+// failed and whose end was never recorded before the daemon died, was met at
+// the next start as cut off and its finished one-shot continued again.
+func TestNoContinuationForAOneShotAlreadyCompleted(t *testing.T) {
+	e, st, second := diedUnder(t, asapTask("relock", false))
+	if err := st.UpdateState(func(s *store.State) error {
+		s.MarkCompletedOnce("relock")
+		s.OweRemoval("relock")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := e.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	e.WaitIdle()
+	if n := len(second.requests()); n != 0 {
+		t.Fatalf("the completed one-shot ran again (%d runs)", n)
+	}
+	if cfg, _ := st.LoadConfig(); len(cfg.Tasks) != 0 {
+		t.Fatal("the completed one-shot is still queued")
+	}
+}

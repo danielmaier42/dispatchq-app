@@ -298,16 +298,14 @@ func TestRetireTaskRecordsAnOwedRemoval(t *testing.T) {
 }
 
 // The review finding: a limit on the continuation replaced its mark, so the
-// "once" could repeat. A pause of the same session keeps it.
-func TestALimitKeepsTheContinuationMark(t *testing.T) {
+// "once" could repeat. A pause keeps the record that the one more go is spent,
+// whatever session id the harness reports, but is an ordinary limit resume.
+func TestALimitKeepsTheSpentContinuation(t *testing.T) {
 	st := newState()
 	st.SetInterruptedResume("a", "sess", "claude", "run-1")
-	st.SetPendingResume("a", "sess", "claude")
-	if p, _ := st.PendingResume("a"); !p.AfterInterrupt || p.InterruptedRun != "run-1" {
-		t.Fatalf("pending after a limit = %+v, want the continuation mark kept", p)
-	}
-	st.SetPendingResume("a", "other", "claude")
-	if p, _ := st.PendingResume("a"); p.AfterInterrupt {
-		t.Fatal("a different session inherited the mark")
+	st.SetPendingResume("a", "sess-forked", "claude")
+	p, _ := st.PendingResume("a")
+	if p.InterruptedRun != "run-1" || p.AfterInterrupt || p.SessionID != "sess-forked" {
+		t.Fatalf("pending after a limit = %+v, want a limit resume that keeps run-1 as spent", p)
 	}
 }

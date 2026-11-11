@@ -1509,20 +1509,26 @@ func (e *Engine) resumeAfterInterrupt(t task.Task, rec store.Run, providerID str
 	if !oneShotTrigger(t.Trigger) || t.IsScript() || rec.SessionID == "" {
 		return false
 	}
-	// A task taken out of the queue meanwhile has nothing to continue.
-	cfg, err := e.store.LoadConfig()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "dispatchqd: task %s: plan to continue its interrupted session: %v\n", t.ID, err)
+	// A task taken out of the queue meanwhile has nothing to continue. A
+	// queue that cannot be read now says nothing either way, and retiring on
+	// that would lose the continuation, so it is planned.
+	if cfg, err := e.store.LoadConfig(); err == nil &&
+		!slices.ContainsFunc(cfg.Tasks, func(q task.Task) bool { return q.ID == t.ID }) {
 		return false
-	}
-	if !slices.ContainsFunc(cfg.Tasks, func(q task.Task) bool { return q.ID == t.ID }) {
-		return false
+	} else if err != nil {
+		fmt.Fprintf(os.Stderr, "dispatchqd: task %s: read the queue: %v (planning the continuation anyway)\n", t.ID, err)
 	}
 	resumed := false
-	err = e.store.UpdateState(func(st *store.State) error {
-		if p, ok := st.PendingResume(t.ID); ok && p.AfterInterrupt {
+	err := e.store.UpdateState(func(st *store.State) error {
+		// A task whose completion is recorded with its removal still owed
+		// finished: the run met here ended after that, unrecorded.
+		if st.IsCompletedOnce(t.ID) && st.IsRemovalOwed(t.ID) {
+			return nil
+		}
+		if p, ok := st.PendingResume(t.ID); ok && p.InterruptedRun != "" {
 			// The same run met again (its end was not recorded before the
-			// daemon stopped) is still the first interruption.
+			// daemon stopped) is still the first interruption; any other run
+			// is the second.
 			resumed = p.InterruptedRun == rec.RunID
 			return nil
 		}

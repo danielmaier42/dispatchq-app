@@ -1063,17 +1063,22 @@ type runView struct {
 }
 
 // listRuns answers with the whole history, newest first — the dashboard filters
-// and pages it, and counts the unread across all of it.
+// and pages it, and counts the unread across all of it. Quiet runs (a
+// quiet-history task's routine successes) are left out unless the query says
+// hidden=1, which is what the Log's "Show hidden runs" filter asks for.
 //
 // What it leaves out is the prompt of each run's task snapshot. The list is
 // polled every few seconds by several views at once, and the prompts are the
 // bulk of it (on a year-old queue, 85% of a 3 MB answer) for text no list row
 // shows. Whoever needs it — replay, the log sheet — asks for that one run.
-func (s *server) listRuns(w http.ResponseWriter, _ *http.Request) {
+func (s *server) listRuns(w http.ResponseWriter, r *http.Request) {
 	runs, unrecorded, err := s.runs()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
+	}
+	if r.URL.Query().Get("hidden") != "1" {
+		runs = store.VisibleRuns(runs)
 	}
 	st, err := s.d.Store.LoadState()
 	if err != nil {
@@ -1151,11 +1156,12 @@ func (s *server) getRun(w http.ResponseWriter, r *http.Request) {
 }
 
 // runView builds the view of one run, minus its task snapshot — which the list
-// and the single-run endpoint fill in differently.
+// and the single-run endpoint fill in differently. A quiet run is never
+// unread: it is a routine tick nobody has to look at.
 func (s *server) runView(r store.Run, st *store.State, active map[string]bool) runView {
 	return runView{
 		Run:           r,
-		Unread:        !st.IsRead(r.RunID),
+		Unread:        !r.Quiet && !st.IsRead(r.RunID),
 		ResumePending: resumePending(r, st, active),
 	}
 }
@@ -1475,7 +1481,9 @@ func (s *server) getStats(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, computeStats(runs, time.Now(), win))
+	// Quiet runs are kept for two days only, so counting them would make the
+	// figures of a day change as they expire.
+	writeJSON(w, http.StatusOK, computeStats(store.VisibleRuns(runs), time.Now(), win))
 }
 
 // listModels answers with the models one provider suggests. The provider is

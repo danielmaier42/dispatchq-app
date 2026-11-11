@@ -512,6 +512,53 @@ func TestListRunsIncludesQuietRunsInFlight(t *testing.T) {
 	}
 }
 
+// The routine successes of a quiet-history task are hidden from the default
+// listing and come back with hidden=1, never unread either way. A failed run
+// of the same task is not hidden: it shows without the filter, unread.
+func TestListRunsHidesQuietRunsUnlessAsked(t *testing.T) {
+	srv, st := newServer(t, nil)
+	at := time.Now()
+	watch := &task.Task{ID: "watch", Name: "watch", QuietHistory: true}
+	for _, r := range []store.Run{
+		{RunID: "tick", TaskID: "watch", TaskName: "watch", StartedAt: at, Status: store.StatusSuccess, Quiet: true, Task: watch},
+		{RunID: "broke", TaskID: "watch", TaskName: "watch", StartedAt: at.Add(time.Minute), Status: store.StatusFailed, Error: "exit status 1", Task: watch},
+	} {
+		if err := st.AppendRun(r); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var views []runView
+	do(t, srv, "GET", "/api/runs", nil).into(t, &views)
+	if len(views) != 1 || views[0].RunID != "broke" || !views[0].Unread {
+		t.Fatalf("the default listing must hold the failed quiet-task run, unread, and no quiet success: %+v", views)
+	}
+
+	do(t, srv, "GET", "/api/runs?hidden=1", nil).into(t, &views)
+	if len(views) != 2 || views[0].RunID != "broke" || views[1].RunID != "tick" || !views[1].Quiet {
+		t.Fatalf("hidden=1 must add the quiet success, marked quiet: %+v", views)
+	}
+	if views[1].Unread {
+		t.Fatal("a quiet run never counts as unread")
+	}
+
+	var one runView
+	if r := do(t, srv, "GET", "/api/runs/tick", nil); r.Status != http.StatusOK {
+		t.Fatalf("GET /api/runs/tick = %d: a hidden run is still found by id", r.Status)
+	} else {
+		r.into(t, &one)
+	}
+	if one.Unread || !one.Quiet {
+		t.Fatalf("single quiet run = %+v", one)
+	}
+
+	var stats Stats
+	do(t, srv, "GET", "/api/stats", nil).into(t, &stats)
+	if stats.Totals.Runs != 1 || stats.Totals.Failed != 1 {
+		t.Fatalf("usage statistics leave quiet runs out: %+v", stats.Totals)
+	}
+}
+
 // A one-shot task that has run is never due again, whatever is left of it in
 // the queue. The queue must say so instead of showing it as due.
 func TestListTasksMarksOneShotThatAlreadyRan(t *testing.T) {

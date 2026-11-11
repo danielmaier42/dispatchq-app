@@ -1,4 +1,4 @@
-import {CornerDownRight, FileText, RotateCcw, TimerOff} from 'lucide-react'
+import {CornerDownRight, EyeOff, FileText, RotateCcw, TimerOff} from 'lucide-react'
 import {useState, type MouseEvent, type ReactNode} from 'react'
 import {Button} from '@/components/ui/button'
 import {Tooltip} from '@/components/ui/tooltip'
@@ -62,6 +62,7 @@ export function RunRow({
           className={cn(
             'block max-w-full truncate rounded-sm text-left text-[13px] outline-none focus-visible:ring-2 focus-visible:ring-accent/40',
             'font-medium',
+            run.quiet && 'text-muted-foreground',
           )}
         >
           {run.task_name}
@@ -70,6 +71,20 @@ export function RunRow({
           <Tooltip content={[runTimeTip(run, now), ...metrics.detail].join('\n')}>
             <span className="shrink-0 tabular-nums">{relTime(run.started_at, now)}</span>
           </Tooltip>
+          {/* The mark keeps its width: in a narrow row the folder and harness give way, and it shrinks to its icon. */}
+          {run.quiet && (
+            <>
+              <span className="text-subtle-foreground" aria-hidden>
+                ·
+              </span>
+              <Tooltip content="A routine success of a quiet-history task. It shows only while Show hidden runs is on and is kept for 48 hours.">
+                <span className="inline-flex shrink-0 items-center gap-1">
+                  <EyeOff className="size-3" aria-label="Hidden" />
+                  <span className="hidden @md/run:inline">Hidden</span>
+                </span>
+              </Tooltip>
+            </>
+          )}
           {error ? (
             <Meta>
               <Tooltip content={run.error}>

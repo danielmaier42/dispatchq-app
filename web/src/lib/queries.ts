@@ -42,6 +42,8 @@ export const keys = {
   tasks: ['tasks'] as const,
   groups: ['groups'] as const,
   runs: ['runs'] as const,
+  // The runs plus the hidden ones (quiet-history successes); under keys.runs, so invalidating that refreshes it too.
+  runsWithHidden: ['runs', {hidden: true}] as const,
   run: (id: string) => ['runs', id] as const,
   runLog: (id: string) => ['runs', id, 'log'] as const,
   artifacts: ['artifacts'] as const,
@@ -71,7 +73,17 @@ function poll<T>(key: QueryKey, path: string, interval: number | false = LIST_PO
 
 export const useTasks = () => useQuery(poll<QueueTask[]>(keys.tasks, '/api/tasks'))
 export const useGroups = () => useQuery(poll<Group[]>(keys.groups, '/api/groups'))
-export const useRuns = () => useQuery(poll<Run[]>(keys.runs, '/api/runs'))
+// useRuns is the run history; withHidden adds the routine successes of
+// quiet-history tasks. Switching between the two keeps the list on screen
+// until the other answer arrives.
+export const useRuns = (withHidden = false) =>
+  useQuery({
+    ...poll<Run[]>(
+      withHidden ? keys.runsWithHidden : keys.runs,
+      withHidden ? '/api/runs?hidden=1' : '/api/runs',
+    ),
+    placeholderData: keepPreviousData,
+  })
 export const useArtifacts = () => useQuery(poll<Artifact[]>(keys.artifacts, '/api/artifacts'))
 export const useNotifications = () =>
   useQuery(poll<AppNotification[]>(keys.notifications, '/api/notifications'))

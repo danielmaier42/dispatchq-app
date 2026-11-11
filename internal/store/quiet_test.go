@@ -1,0 +1,132 @@
+package store
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"os"
+	"testing"
+	"time"
+)
+
+func writeLog(t *testing.T, s *Store, id string) {
+	t.Helper()
+	if err := os.MkdirAll(s.path(runsDir), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(s.LogPath(id), []byte("log\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeHistory writes runs as history.jsonl in one go, each with a log.
+func writeHistory(t *testing.T, s *Store, runs ...Run) {
+	t.Helper()
+	var buf bytes.Buffer
+	for _, r := range runs {
+		if r.LogPath == "" {
+			r.LogPath = s.LogPath(r.RunID)
+		}
+		writeLog(t, s, r.RunID)
+		b, err := json.Marshal(r)
+		if err != nil {
+			t.Fatal(err)
+		}
+		buf.Write(append(b, '\n'))
+	}
+	if err := os.WriteFile(s.path(historyFile), buf.Bytes(), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func appendRun(t *testing.T, s *Store, r Run) {
+	t.Helper()
+	if r.LogPath == "" {
+		r.LogPath = s.LogPath(r.RunID)
+	}
+	writeLog(t, s, r.RunID)
+	if err := s.AppendRun(r); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func runIDs(t *testing.T, s *Store) []string {
+	t.Helper()
+	runs, err := s.Runs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, len(runs))
+	for i, r := range runs {
+		ids[i] = r.RunID
+	}
+	return ids
+}
+
+func TestPruneQuietRunsDropsExpiredAndSurplusQuietRunsOnly(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	old := now.Add(-QuietRunMaxAge - time.Minute)
+	fresh := now.Add(-time.Hour)
+	runs := []Run{
+		{RunID: "old-real", TaskID: "real", StartedAt: old, FinishedAt: &old, Status: StatusSuccess},
+		{RunID: "old-quiet", TaskID: "watch", StartedAt: old, FinishedAt: &old, Status: StatusSuccess, Quiet: true},
+	}
+	// One more than a task may keep, all fresh: the oldest of them goes.
+	for i := range QuietRunsPerTask + 1 {
+		at := fresh.Add(time.Duration(i) * time.Second)
+		runs = append(runs, Run{RunID: fmt.Sprintf("tick-%03d", i), TaskID: "busy", StartedAt: at, FinishedAt: &at, Status: StatusSuccess, Quiet: true})
+	}
+	runs = append(runs, Run{RunID: "fresh-quiet", TaskID: "watch", StartedAt: fresh, FinishedAt: &fresh, Status: StatusSuccess, Quiet: true})
+	writeHistory(t, s, runs...)
+
+	if err := s.PruneQuietRuns(now); err != nil {
+		t.Fatal(err)
+	}
+	ids := runIDs(t, s)
+	if len(ids) != QuietRunsPerTask+2 || ids[0] != "old-real" || ids[1] != "tick-001" || ids[len(ids)-1] != "fresh-quiet" {
+		t.Fatalf("want old-real, tick-001…tick-%03d and fresh-quiet, got %d runs starting %v", QuietRunsPerTask, len(ids), ids[:3])
+	}
+	for _, gone := range []string{"old-quiet", "tick-000"} {
+		if _, err := os.Stat(s.LogPath(gone)); !os.IsNotExist(err) {
+			t.Fatalf("log of pruned quiet run %s must be deleted: %v", gone, err)
+		}
+	}
+	if _, err := os.Stat(s.LogPath("old-real")); err != nil {
+		t.Fatalf("a real run's log is not this function's business: %v", err)
+	}
+}
+
+func TestPruneHistoryDoesNotCountQuietRuns(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Now()
+	appendRun(t, s, Run{RunID: "a", TaskID: "real", StartedAt: at, Status: StatusFailed})
+	appendRun(t, s, Run{RunID: "q1", TaskID: "watch", StartedAt: at, Status: StatusSuccess, Quiet: true})
+	appendRun(t, s, Run{RunID: "b", TaskID: "real", StartedAt: at, Status: StatusSuccess})
+	appendRun(t, s, Run{RunID: "q2", TaskID: "watch", StartedAt: at, Status: StatusSuccess, Quiet: true})
+	appendRun(t, s, Run{RunID: "c", TaskID: "real", StartedAt: at, Status: StatusSuccess})
+
+	if err := s.PruneHistory(2); err != nil {
+		t.Fatal(err)
+	}
+	if got := fmt.Sprint(runIDs(t, s)); got != "[q1 b q2 c]" {
+		t.Fatalf("the limit counts real runs only and leaves quiet ones alone: got %s", got)
+	}
+	if _, err := os.Stat(s.LogPath("a")); !os.IsNotExist(err) {
+		t.Fatalf("the dropped run's log must go: %v", err)
+	}
+}
+
+func TestVisibleRunsLeavesOutQuietRuns(t *testing.T) {
+	runs := []Run{{RunID: "a"}, {RunID: "q", Quiet: true}, {RunID: "b", Status: StatusFailed}}
+	got := VisibleRuns(runs)
+	if len(got) != 2 || got[0].RunID != "a" || got[1].RunID != "b" {
+		t.Fatalf("got %+v", got)
+	}
+}

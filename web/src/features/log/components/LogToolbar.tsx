@@ -4,6 +4,7 @@ import {FilterPopover, FilterSelect, optionLabel} from '@/components/ui/filter-p
 import {Field} from '@/components/ui/field'
 import {SearchInput} from '@/components/ui/search-input'
 import {Segmented} from '@/components/ui/segmented'
+import {Switch} from '@/components/ui/switch'
 import {setLogFilters} from '../filters-store'
 import type {FilterMenus, LogFilters, Show} from '../runs'
 
@@ -19,7 +20,7 @@ export function LogToolbar({f, menus}: {f: LogFilters; menus: FilterMenus}) {
     {key: 'status', label: 'Outcome', value: f.status, options: menus.statuses},
   ] as const
   const days = dateRangeLabel(f.from, f.to)
-  const active = menu.filter((m) => m.value).length + (days ? 1 : 0)
+  const active = menu.filter((m) => m.value).length + (days ? 1 : 0) + (f.hidden ? 1 : 0)
 
   return (
     <>
@@ -46,7 +47,9 @@ export function LogToolbar({f, menus}: {f: LogFilters; menus: FilterMenus}) {
       />
       <FilterPopover
         active={active}
-        onReset={() => setLogFilters({group: '', task: '', provider: '', status: '', from: '', to: ''})}
+        onReset={() =>
+          setLogFilters({group: '', task: '', provider: '', status: '', from: '', to: '', hidden: false})
+        }
       >
         <FilterSelect
           label="Group"
@@ -85,6 +88,19 @@ export function LogToolbar({f, menus}: {f: LogFilters; menus: FilterMenus}) {
             onTo={(to) => setLogFilters({to})}
           />
         </Field>
+        <Field
+          label="Hidden runs"
+          hint="Successful runs of quiet-history tasks, kept for 48 hours. Hidden again when the window reloads."
+        >
+          <label className="flex cursor-pointer items-center justify-between gap-3 text-[13px]">
+            Show hidden runs
+            <Switch
+              checked={f.hidden}
+              aria-label="Show hidden runs"
+              onCheckedChange={(hidden) => setLogFilters({hidden})}
+            />
+          </label>
+        </Field>
       </FilterPopover>
       {menu.map(
         (m) =>
@@ -98,6 +114,7 @@ export function LogToolbar({f, menus}: {f: LogFilters; menus: FilterMenus}) {
           ),
       )}
       {days && <FilterChip value={days} onRemove={() => setLogFilters({from: '', to: ''})} />}
+      {f.hidden && <FilterChip value="Hidden runs shown" onRemove={() => setLogFilters({hidden: false})} />}
     </>
   )
 }

@@ -1,6 +1,7 @@
 import {describe, expect, it} from 'vitest'
 import type {Run} from '@/lib/types'
 import {
+  anyFilter,
   canContinue,
   canTakeOver,
   cancelMode,
@@ -42,6 +43,15 @@ describe('statusLabel', () => {
     expect(statusLabel({status: 'rate_limited_waiting', resume_pending: true})).toBe('rescheduled')
     expect(statusLabel({status: 'rate_limited_waiting'})).toBe('rate limited')
     expect(statusLabel({status: 'auth_error'})).toBe('auth error')
+  })
+})
+
+describe('anyFilter', () => {
+  // Showing hidden runs widens the list, so it is not what made a list come
+  // up empty and does not turn the count into "matching".
+  it('does not count showing hidden runs as a filter', () => {
+    expect(anyFilter({...emptyFilters, hidden: true})).toBe(false)
+    expect(anyFilter({...emptyFilters, hidden: true, task: 't1'})).toBe(true)
   })
 })
 

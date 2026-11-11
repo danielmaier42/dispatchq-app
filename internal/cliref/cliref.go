@@ -151,7 +151,7 @@ func taskFlags() []Flag {
 		boolFlag("parallel", "may run alongside other parallel tasks"),
 		boolFlag("skip-permissions", "run with permissions skip: may do anything without asking"),
 		boolFlag("notify", "send a notification with the outcome"),
-		boolFlag("quiet-history", "keep successful runs out of the history"),
+		boolFlag("quiet-history", "hide successful runs from the Log"),
 		boolFlag("backfill", "run only on spare allowance"),
 	}
 }
@@ -202,7 +202,7 @@ var commands = []Command{
 	{Path: []string{"disable"}, Args: []Arg{arg("ID")}, Access: Write, Help: "disable a task"},
 	{Path: []string{"move"}, Args: []Arg{arg("ID"), arg("INDEX")}, Access: Write, Help: "move a task to a queue position (0 = highest priority)"},
 	{Path: []string{"run-now"}, Args: []Arg{arg("ID")}, Access: Write, Help: "run a task once, now"},
-	{Path: []string{"status"}, Flags: []Flag{boolFlag("all", "every run, not the last 20"), jsonFlag}, Access: Read, Help: "recent runs"},
+	{Path: []string{"status"}, Flags: []Flag{boolFlag("all", "every run, not the last 20"), boolFlag("hidden", "include quiet-history successes"), jsonFlag}, Access: Read, Help: "recent runs"},
 	{Path: []string{"read"}, Args: []Arg{arg("RUNID")}, Access: Write, Help: "mark a run read"},
 	{Path: []string{"read-all"}, Access: Write, Help: "mark every run read"},
 	{Path: []string{"settings"}, Flags: []Flag{

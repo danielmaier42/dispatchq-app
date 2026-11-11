@@ -73,3 +73,43 @@ func TestStatusJSONWithoutRunsIsAnEmptyList(t *testing.T) {
 		t.Fatalf("want [], got %q", out)
 	}
 }
+
+// Scripts read `status --all --json`. A quiet-history task's routine successes
+// must not appear there; --hidden adds them, marked quiet and never unread.
+func TestStatusLeavesOutQuietRunsUnlessHidden(t *testing.T) {
+	st := newTestStore(t)
+	start := time.Date(2026, 11, 11, 9, 0, 0, 0, time.UTC)
+	for _, r := range []store.Run{
+		{RunID: "tick", TaskID: "watch", TaskName: "Watcher", StartedAt: start, Status: store.StatusSuccess, Quiet: true},
+		{RunID: "broke", TaskID: "watch", TaskName: "Watcher", StartedAt: start.Add(time.Minute), Status: store.StatusFailed},
+	} {
+		if err := st.AppendRun(r); err != nil {
+			t.Fatalf("AppendRun: %v", err)
+		}
+	}
+
+	var got []statusRun
+	out := captureStdout(t, func() error { return cmdStatus(st, []string{"--all", "--json"}) })
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("status --json: %v\n%s", err, out)
+	}
+	if len(got) != 1 || got[0].RunID != "broke" || !got[0].Unread || got[0].Quiet {
+		t.Fatalf("status --all --json must list the failure only: %+v", got)
+	}
+	if strings.Contains(out, "quiet") {
+		t.Fatalf("a run that is not quiet carries no quiet field:\n%s", out)
+	}
+
+	out = captureStdout(t, func() error { return cmdStatus(st, []string{"--all", "--hidden", "--json"}) })
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("status --hidden --json: %v\n%s", err, out)
+	}
+	if len(got) != 2 || got[0].RunID != "tick" || !got[0].Quiet || got[0].Unread {
+		t.Fatalf("--hidden must add the quiet success, marked quiet and read: %+v", got)
+	}
+
+	out = captureStdout(t, func() error { return cmdStatus(st, []string{"--hidden"}) })
+	if !strings.Contains(out, "tick") || !strings.Contains(out, "1 unread") {
+		t.Fatalf("the table counts only the failure as unread:\n%s", out)
+	}
+}

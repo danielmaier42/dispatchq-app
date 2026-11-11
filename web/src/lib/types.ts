@@ -170,6 +170,8 @@ export interface Run {
   exit_code: number
   log_path: string
   error?: string
+  // A quiet-history task's routine success: GET /api/runs lists it only with ?hidden=1. Never unread.
+  quiet?: boolean
   // Task snapshot at run time. In GET /api/runs its prompt is "" (stripped); GET /api/runs/{id} sends it in full.
   task?: Task
   provider?: RunProvider

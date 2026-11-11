@@ -47,6 +47,10 @@ export interface LogFilters {
   status: string
   from: string
   to: string
+  // Also list the hidden runs: the routine successes of quiet-history tasks,
+  // which the daemon leaves out unless asked. It widens the list rather than
+  // narrowing it, and it is never saved: a reload hides them again.
+  hidden: boolean
 }
 
 export const emptyFilters: LogFilters = {
@@ -58,6 +62,7 @@ export const emptyFilters: LogFilters = {
   status: '',
   from: '',
   to: '',
+  hidden: false,
 }
 
 // NO_GROUP stands for "no group": a real group name never starts with a space.
@@ -110,7 +115,9 @@ export function runMatches(r: Run, f: LogFilters): boolean {
   )
 }
 
-export const anyFilter = (f: LogFilters) => Object.values(f).some(Boolean)
+// Whether anything narrows the list. Showing hidden runs widens it instead, so
+// it does not count.
+export const anyFilter = ({hidden: _, ...f}: LogFilters) => Object.values(f).some(Boolean)
 
 export interface MenuOption {
   value: string

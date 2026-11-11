@@ -420,7 +420,9 @@ func (s *Store) BackfillLastRuns() (int, error) {
 
 // PruneHistory keeps only the most recent `limit` runs: it compacts
 // history.jsonl to one latest event per kept run and deletes the log files of
-// the dropped runs. limit <= 0 keeps everything.
+// the dropped runs. limit <= 0 keeps everything. Quiet runs neither count
+// against the limit nor are dropped by it: PruneQuietRuns bounds them, so a
+// watcher's ticks never push a real run out of the record.
 func (s *Store) PruneHistory(limit int) error {
 	if limit <= 0 {
 		return nil
@@ -460,11 +462,26 @@ func (s *Store) PruneHistory(limit int) error {
 		return fmt.Errorf("read history: %w", scErr)
 	}
 
-	if len(order) <= limit {
+	var counted []string
+	for _, id := range order {
+		if !latest[id].Quiet {
+			counted = append(counted, id)
+		}
+	}
+	if len(counted) <= limit {
 		return nil
 	}
-	drop := order[:len(order)-limit]
-	keep := order[len(order)-limit:]
+	drop := counted[:len(counted)-limit]
+	dropped := make(map[string]bool, len(drop))
+	for _, id := range drop {
+		dropped[id] = true
+	}
+	keep := make([]string, 0, len(order)-len(drop))
+	for _, id := range order {
+		if !dropped[id] {
+			keep = append(keep, id)
+		}
+	}
 
 	var buf bytes.Buffer
 	for _, id := range keep {

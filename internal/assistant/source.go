@@ -58,7 +58,7 @@ func (s *StoreSource) Overview(context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	runs, err := s.Store.Runs()
+	runs, err := visibleRuns(s.Store)
 	if err != nil {
 		return "", err
 	}
@@ -297,7 +297,7 @@ func (s *StoreSource) lookupTask(id string) string {
 		what = "Script"
 	}
 	fmt.Fprintf(&b, "%s:\n%s\n", what, clip(t.Prompt, 4000))
-	if runs, err := s.Store.Runs(); err == nil {
+	if runs, err := visibleRuns(s.Store); err == nil {
 		var mine []store.Run
 		for _, r := range runs {
 			if r.TaskID == t.ID {
@@ -353,7 +353,7 @@ func (s *StoreSource) lookupRun(id string) string {
 }
 
 func (s *StoreSource) lookupRuns(q string) string {
-	runs, err := s.Store.Runs()
+	runs, err := visibleRuns(s.Store)
 	if err != nil {
 		return "Could not read the run history: " + err.Error()
 	}
@@ -431,7 +431,7 @@ func (s *StoreSource) lookupUsage(arg string) string {
 		days = 7
 	}
 	days = min(days, 90)
-	runs, err := s.Store.Runs()
+	runs, err := visibleRuns(s.Store)
 	if err != nil {
 		return "Could not read the run history: " + err.Error()
 	}
@@ -947,4 +947,12 @@ func parseTime(s string, loc *time.Location) (time.Time, bool) {
 		}
 	}
 	return time.Time{}, false
+}
+
+// visibleRuns is the history without the quiet runs (the routine successes of
+// quiet-history tasks), which the Log too leaves out unless asked. A lookup by
+// run id still finds one.
+func visibleRuns(st *store.Store) ([]store.Run, error) {
+	runs, err := st.Runs()
+	return store.VisibleRuns(runs), err
 }

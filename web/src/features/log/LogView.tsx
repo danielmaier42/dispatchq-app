@@ -24,9 +24,9 @@ import {
 // The Log is the run history: every run, newest first, split by day, with the
 // runs of one workflow boxed together. Opening a run shows its log.
 export function LogView() {
-  const runsQuery = useRuns()
-  const runs = runsQuery.data
   const state = useLogFilters()
+  const runsQuery = useRuns(state.hidden)
+  const runs = runsQuery.data
   const limitedUntil = useHealth().data?.limited_until || undefined
   const noCredit = useNoCredit()
   const showProvider = (useProviders().data?.length ?? 0) > 1

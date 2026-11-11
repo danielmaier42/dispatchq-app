@@ -5,7 +5,7 @@ import {Button} from '@/components/ui/button'
 import {EmptyState} from '@/components/ui/empty-state'
 import {Skeleton} from '@/components/ui/skeleton'
 import {groupByDay} from '@/lib/format'
-import {useHealth, useProviders, useRuns} from '@/lib/queries'
+import {useHealth, useProviders, useRuns, useTasks} from '@/lib/queries'
 import {useNoCredit} from '@/features/dashboard/use-no-credit'
 import {LogToolbar} from './components/LogToolbar'
 import {RunRow} from './components/RunRow'
@@ -30,6 +30,8 @@ export function LogView() {
   const limitedUntil = useHealth().data?.limited_until || undefined
   const noCredit = useNoCredit()
   const showProvider = (useProviders().data?.length ?? 0) > 1
+  // Only a queue with a quiet-history task can have hidden runs to point at.
+  const anyQuiet = useTasks().data?.some((t) => t.quiet_history) ?? false
 
   const {f, menus} = useMemo(() => {
     const all = runs ?? []
@@ -73,7 +75,9 @@ export function LogView() {
           description={
             state.hidden
               ? 'No run is recorded, hidden runs included. Runs will appear here after tasks execute.'
-              : 'Runs will appear here after tasks execute. Successful runs of quiet-history tasks are hidden; Filter → Show hidden runs lists them.'
+              : anyQuiet
+                ? 'Runs will appear here after tasks execute. Successful runs of quiet-history tasks are hidden; Filter → Show hidden runs lists them.'
+                : 'Runs will appear here after tasks execute.'
           }
         />
       ) : !filtered.length ? (

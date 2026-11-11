@@ -419,22 +419,31 @@ func (s *Store) PruneHistory(limit int) error {
 	if limit <= 0 {
 		return nil
 	}
-	// The rewrite below replaces the file: the cross-process lock keeps
-	// another process's AppendRun from landing in between and being lost.
+	// History is read without the cross-process write lock first, so a call
+	// with nothing to drop holds nobody up. A rewrite takes the lock and reads
+	// again under it: it replaces the file, and another process's AppendRun
+	// landing in between would otherwise be lost.
+	s.mu.Lock()
+	due, err := s.pruneHistoryLocked(limit, false)
+	s.mu.Unlock()
+	if err != nil || !due {
+		return err
+	}
 	return s.withWriteLock(func() error {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		return s.pruneHistoryLocked(limit)
+		_, err := s.pruneHistoryLocked(limit, true)
+		return err
 	})
 }
 
-// pruneHistoryLocked is PruneHistory for a caller holding the write lock and
-// s.mu.
-func (s *Store) pruneHistoryLocked(limit int) error {
-
+// pruneHistoryLocked reports whether a batch of runs is due to be dropped and,
+// when rewrite is set, drops it. The caller holds s.mu, and for a rewrite the
+// cross-process write lock as well.
+func (s *Store) pruneHistoryLocked(limit int, rewrite bool) (bool, error) {
 	latest, order, err := s.readHistoryLocked()
 	if err != nil {
-		return err
+		return false, err
 	}
 	var counted []string
 	for _, id := range order {
@@ -445,11 +454,11 @@ func (s *Store) pruneHistoryLocked(limit int) error {
 
 	slack := pruneSlack(limit)
 	if len(counted)-limit <= slack {
-		return nil
+		return false, nil
 	}
 	st, err := s.loadStateLocked()
 	if err != nil {
-		return fmt.Errorf("prune history: %w", err)
+		return false, fmt.Errorf("prune history: %w", err)
 	}
 	var drop []string
 	dropped := map[string]bool{}
@@ -461,7 +470,10 @@ func (s *Store) pruneHistoryLocked(limit int) error {
 		dropped[id] = true
 	}
 	if len(drop) <= slack {
-		return nil
+		return false, nil
+	}
+	if !rewrite {
+		return true, nil
 	}
 	keep := make([]string, 0, len(order)-len(drop))
 	for _, id := range order {
@@ -474,13 +486,13 @@ func (s *Store) pruneHistoryLocked(limit int) error {
 	for _, id := range keep {
 		b, err := json.Marshal(latest[id])
 		if err != nil {
-			return fmt.Errorf("marshal run: %w", err)
+			return true, fmt.Errorf("marshal run: %w", err)
 		}
 		buf.Write(b)
 		buf.WriteByte('\n')
 	}
 	if err := writeAtomic(s.path(historyFile), buf.Bytes()); err != nil {
-		return fmt.Errorf("rewrite history: %w", err)
+		return true, fmt.Errorf("rewrite history: %w", err)
 	}
 	for _, id := range drop {
 		p := latest[id].LogPath
@@ -489,7 +501,7 @@ func (s *Store) pruneHistoryLocked(limit int) error {
 		}
 		_ = os.Remove(p)
 	}
-	return nil
+	return true, nil
 }
 
 // pruneSlack is how many runs past the limit PruneHistory lets accumulate

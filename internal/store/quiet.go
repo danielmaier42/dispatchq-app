@@ -21,35 +21,48 @@ const (
 	// the newest ones. It is what bounds a task that ticks more often than
 	// every fifteen minutes within QuietRunMaxAge.
 	QuietRunsPerTask = 200
-	// quietPruneSlack is how many hidden runs may be due for pruning before
-	// history is rewritten: once a watcher is past its retention, every tick
-	// would otherwise rewrite the whole file to drop one run.
-	quietPruneSlack = 20
+	// QuietPruneBatch and QuietPruneGrace keep a watcher past its retention
+	// from rewriting the whole history on every tick to drop one run: history
+	// is rewritten once more than QuietPruneBatch runs are due, or once a due
+	// run is QuietPruneGrace past its retention. A due run therefore outlives
+	// the limits by at most that batch or that grace, and the runs of a
+	// watcher that stopped ticking still go.
+	QuietPruneBatch = 20
+	QuietPruneGrace = 6 * time.Hour
 )
 
 // PruneQuietRuns drops the quiet runs older than QuietRunMaxAge at now and,
 // per task, all but the newest QuietRunsPerTask, deleting their logs with
-// them. Every other run is left exactly as it is. History is rewritten only
-// once more than quietPruneSlack runs are due, so a due run can outlive its
-// retention by that many ticks. The rewrite holds the cross-process write
-// lock, so a run another process appends meanwhile is not lost.
+// them, once a batch of them is due (see QuietPruneBatch). Every other run is
+// left exactly as it is. History is first read without the cross-process
+// write lock; only a due rewrite takes it, and reads again under it, so a run
+// another process appends meanwhile is not lost and a tick with nothing to do
+// holds nobody up.
 func (s *Store) PruneQuietRuns(now time.Time) error {
+	s.mu.Lock()
+	due, err := s.pruneQuietRunsLocked(now, false)
+	s.mu.Unlock()
+	if err != nil || !due {
+		return err
+	}
 	return s.withWriteLock(func() error {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		return s.pruneQuietRunsLocked(now)
+		_, err := s.pruneQuietRunsLocked(now, true)
+		return err
 	})
 }
 
-// pruneQuietRunsLocked is PruneQuietRuns for a caller holding the write lock
-// and s.mu.
-func (s *Store) pruneQuietRunsLocked(now time.Time) error {
-
+// pruneQuietRunsLocked reports whether a batch of quiet runs is due and, when
+// rewrite is set, drops it. The caller holds s.mu, and for a rewrite the
+// cross-process write lock as well.
+func (s *Store) pruneQuietRunsLocked(now time.Time, rewrite bool) (bool, error) {
 	latest, order, err := s.readHistoryLocked()
 	if err != nil || len(order) == 0 {
-		return err
+		return false, err
 	}
 	cutoff := now.Add(-QuietRunMaxAge)
+	overdue := false
 	perTask := map[string]int{}
 	dropped := map[string]bool{}
 	// Newest first, so the per-task count keeps the latest runs.
@@ -66,9 +79,15 @@ func (s *Store) pruneQuietRunsLocked(now time.Time) error {
 		if ended.Before(cutoff) || perTask[r.TaskID] > QuietRunsPerTask {
 			dropped[r.RunID] = true
 		}
+		if ended.Before(cutoff.Add(-QuietPruneGrace)) {
+			overdue = true
+		}
 	}
-	if len(dropped) <= quietPruneSlack {
-		return nil
+	if len(dropped) <= QuietPruneBatch && !overdue {
+		return false, nil
+	}
+	if !rewrite {
+		return true, nil
 	}
 
 	var buf bytes.Buffer
@@ -78,13 +97,13 @@ func (s *Store) pruneQuietRunsLocked(now time.Time) error {
 		}
 		b, err := json.Marshal(latest[id])
 		if err != nil {
-			return fmt.Errorf("marshal run: %w", err)
+			return true, fmt.Errorf("marshal run: %w", err)
 		}
 		buf.Write(b)
 		buf.WriteByte('\n')
 	}
 	if err := writeAtomic(s.path(historyFile), buf.Bytes()); err != nil {
-		return fmt.Errorf("rewrite history: %w", err)
+		return true, fmt.Errorf("rewrite history: %w", err)
 	}
 	var errs []error
 	for id := range dropped {
@@ -96,7 +115,7 @@ func (s *Store) pruneQuietRunsLocked(now time.Time) error {
 			errs = append(errs, fmt.Errorf("remove log of quiet run %s: %w", id, err))
 		}
 	}
-	return errors.Join(errs...)
+	return true, errors.Join(errs...)
 }
 
 // readHistoryLocked reads history.jsonl collapsed to the latest event per run

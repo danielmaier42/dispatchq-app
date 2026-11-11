@@ -75,8 +75,8 @@ func TestPruneQuietRunsDropsExpiredAndSurplusQuietRunsOnly(t *testing.T) {
 		{RunID: "old-real", TaskID: "real", StartedAt: old, FinishedAt: &old, Status: StatusSuccess},
 		{RunID: "old-quiet", TaskID: "watch", StartedAt: old, FinishedAt: &old, Status: StatusSuccess, Quiet: true},
 	}
-	// Enough expired ones to make a batch (see quietPruneSlack).
-	for i := range quietPruneSlack {
+	// Enough expired ones to make a batch (see QuietPruneBatch).
+	for i := range QuietPruneBatch {
 		runs = append(runs, Run{RunID: fmt.Sprintf("old-%02d", i), TaskID: "watch", StartedAt: old, FinishedAt: &old, Status: StatusSuccess, Quiet: true})
 	}
 	// One more than a task may keep, all fresh: the oldest of them goes.
@@ -167,7 +167,7 @@ func TestHistoryRewritesDoNotLoseAnotherProcesssAppends(t *testing.T) {
 		select {
 		case <-done:
 		default:
-			for i := range quietPruneSlack + 1 {
+			for i := range QuietPruneBatch + 1 {
 				id := fmt.Sprintf("q-%d-%d", round, i)
 				if err := cli.AppendRun(Run{RunID: id, TaskID: "watch", StartedAt: old, FinishedAt: &old, Status: StatusSuccess, Quiet: true}); err != nil {
 					t.Fatal(err)
@@ -199,15 +199,15 @@ func TestPruneQuietRunsWaitsForABatch(t *testing.T) {
 	now := time.Now()
 	old := now.Add(-QuietRunMaxAge - time.Hour)
 	var runs []Run
-	for i := range quietPruneSlack {
+	for i := range QuietPruneBatch {
 		runs = append(runs, Run{RunID: fmt.Sprintf("q-%02d", i), TaskID: "watch", StartedAt: old, FinishedAt: &old, Status: StatusSuccess, Quiet: true})
 	}
 	writeHistory(t, s, runs...)
 	if err := s.PruneQuietRuns(now); err != nil {
 		t.Fatal(err)
 	}
-	if got := len(runIDs(t, s)); got != quietPruneSlack {
-		t.Fatalf("%d expired runs are not yet a batch: want them kept, got %d", quietPruneSlack, got)
+	if got := len(runIDs(t, s)); got != QuietPruneBatch {
+		t.Fatalf("%d expired runs are not yet a batch: want them kept, got %d", QuietPruneBatch, got)
 	}
 	appendRun(t, s, Run{RunID: "q-last", TaskID: "watch", StartedAt: old, FinishedAt: &old, Status: StatusSuccess, Quiet: true})
 	if err := s.PruneQuietRuns(now); err != nil {
@@ -215,5 +215,28 @@ func TestPruneQuietRunsWaitsForABatch(t *testing.T) {
 	}
 	if got := runIDs(t, s); len(got) != 0 {
 		t.Fatalf("one more makes a batch and all expired go: %v", got)
+	}
+}
+
+// A watcher that stopped ticking never makes a batch; its expired runs still
+// go once they are well past their retention.
+func TestPruneQuietRunsDropsOverdueRunsWithoutABatch(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	due := now.Add(-QuietRunMaxAge - time.Hour)
+	overdue := now.Add(-QuietRunMaxAge - QuietPruneGrace - time.Minute)
+	writeHistory(t, s,
+		Run{RunID: "overdue", TaskID: "stopped", StartedAt: overdue, FinishedAt: &overdue, Status: StatusSuccess, Quiet: true},
+		Run{RunID: "due", TaskID: "stopped", StartedAt: due, FinishedAt: &due, Status: StatusSuccess, Quiet: true},
+		Run{RunID: "real", TaskID: "real", StartedAt: overdue, FinishedAt: &overdue, Status: StatusSuccess},
+	)
+	if err := s.PruneQuietRuns(now); err != nil {
+		t.Fatal(err)
+	}
+	if got := fmt.Sprint(runIDs(t, s)); got != "[real]" {
+		t.Fatalf("an overdue run sends every due one, and only those: got %s", got)
 	}
 }

@@ -95,9 +95,7 @@ func TestQuietRunsDoNotCrowdOutRealHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.WaitIdle()
-	// More ticks than the store lets expire before it rewrites history (its
-	// prune slack of 20), so their expiry below is due as one batch.
-	const ticks = 21
+	const ticks = 5
 	for range ticks {
 		fc.Advance(15 * time.Minute)
 		if err := e.RunTaskNow(context.Background(), "watch"); err != nil {
@@ -113,8 +111,9 @@ func TestQuietRunsDoNotCrowdOutRealHistory(t *testing.T) {
 		t.Fatalf("all quiet ticks are within their retention: got %d runs", len(runs))
 	}
 
-	// Two days later the next tick finds the earlier ones expired.
-	fc.Advance(store.QuietRunMaxAge + time.Minute)
+	// Past their retention and its grace (too few for a batch), the next tick
+	// finds the earlier ones expired.
+	fc.Advance(store.QuietRunMaxAge + store.QuietPruneGrace + time.Minute)
 	if err := e.RunTaskNow(context.Background(), "watch"); err != nil {
 		t.Fatal(err)
 	}

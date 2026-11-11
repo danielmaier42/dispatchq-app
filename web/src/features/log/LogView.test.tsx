@@ -17,11 +17,12 @@ vi.hoisted(() => {
 })
 
 // What the daemon answers: the visible runs, and with hidden=1 the hidden ones too.
-const lists = vi.hoisted(() => ({visible: [] as Run[], withHidden: [] as Run[]}))
+const lists = vi.hoisted(() => ({visible: [] as Run[], withHidden: [] as Run[], quietTask: true}))
 vi.mock('@/lib/queries', async (importOriginal) => ({
   ...(await importOriginal<object>()),
   useRuns: (withHidden = false) => ({data: withHidden ? lists.withHidden : lists.visible, isError: false}),
   useHealth: () => ({data: undefined}),
+  useTasks: () => ({data: [{id: 'watch', quiet_history: lists.quietTask}]}),
   useProviders: () => ({data: []}),
 }))
 vi.mock('@/features/dashboard/use-no-credit', () => ({useNoCredit: () => new Set<string>()}))
@@ -56,6 +57,7 @@ describe('LogView', () => {
   it('keeps the filter bar when every run is hidden', () => {
     lists.visible = []
     lists.withHidden = [tick]
+    lists.quietTask = true
     show()
     expect(screen.getByRole('button', {name: /^Filter/})).toBeTruthy()
     expect(screen.getByText(/Show hidden runs/)).toBeTruthy()
@@ -71,5 +73,15 @@ describe('LogView', () => {
     expect(screen.getByText('Hidden runs shown')).toBeTruthy()
     expect(screen.getByText('Nothing logged yet')).toBeTruthy()
     expect(screen.getByText(/hidden runs included/)).toBeTruthy()
+  })
+
+  // Without a quiet-history task there is nothing hidden to point at.
+  it('does not mention hidden runs to a queue without quiet-history tasks', () => {
+    lists.visible = []
+    lists.withHidden = []
+    lists.quietTask = false
+    show()
+    expect(screen.getByText('Runs will appear here after tasks execute.')).toBeTruthy()
+    expect(screen.queryByText(/Show hidden runs/)).toBeNull()
   })
 })

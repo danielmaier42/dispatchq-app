@@ -116,6 +116,7 @@ func TestARefusedStartRecordLeavesNoPhantomRun(t *testing.T) {
 	fc := clock.NewFake(time.Date(2026, 11, 11, 11, 13, 2, 0, time.UTC))
 	r := &stub{}
 	e, st := newTestEngine(t, r, fc)
+	st.SetRetrySleep(func(time.Duration) {})
 	saveTasks(t, st, asapTask("a", false))
 	unblock := refuseHistoryWrites(t, st)
 
@@ -154,6 +155,7 @@ func TestARefusedStartRecordLeavesNoPhantomRun(t *testing.T) {
 func TestCancelResumeSucceedsWhenItsRecordIsKept(t *testing.T) {
 	fc := clock.NewFake(time.Date(2026, 7, 17, 22, 0, 0, 0, time.UTC))
 	e, st, _ := rateLimitedTask(t, asapTask("a", false), fc)
+	st.SetRetrySleep(func(time.Duration) {})
 	unblock := refuseHistoryWrites(t, st)
 	defer unblock()
 
@@ -162,5 +164,77 @@ func TestCancelResumeSucceedsWhenItsRecordIsKept(t *testing.T) {
 	}
 	if s, _ := st.LoadState(); len(s.PendingResumes) != 0 {
 		t.Fatal("the resume is still planned")
+	}
+}
+
+// The review finding: a run's process record was cleared before its outcome
+// was written, so a quiet-history run whose outcome history could not take
+// (or a daemon killed in between) left no trace at all. The process record
+// stays until the outcome is written or kept: a start that cannot write it
+// either keeps it too, and the first start that can records the run.
+func TestAQuietRunWhoseOutcomeCannotBeWrittenIsRecordedAtTheNextStart(t *testing.T) {
+	fc := clock.NewFake(time.Date(2026, 11, 11, 11, 13, 2, 0, time.UTC))
+	procs := newFakeProcs()
+	first := &startedStub{pid: 50311, procs: procs, block: make(chan struct{})}
+	e, st := newTestEngine(t, first, fc)
+	st.SetRetrySleep(func(time.Duration) {})
+	e.procs = procs
+	tk := asapTask("watch", false)
+	tk.QuietHistory = true
+	saveTasks(t, st, tk)
+	if err := e.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		s, _ := st.LoadState()
+		return len(s.LiveRuns) == 1
+	})
+
+	// History refuses the outcome, and there is no room to keep it either.
+	unblock := refuseHistoryWrites(t, st)
+	runs := filepath.Join(st.Home(), "runs")
+	if err := os.Chmod(runs, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(runs, 0o755) })
+	close(first.block)
+	e.WaitIdle()
+	if s, _ := st.LoadState(); len(s.LiveRuns) != 1 {
+		t.Fatal("the process record went although the outcome was written nowhere")
+	}
+	procs.exit(50311)
+
+	// restart is a daemon start in a new process: a store with nothing in
+	// memory, on the same data directory.
+	restart := func() *store.Store {
+		t.Helper()
+		next, err := store.Open(st.Home())
+		if err != nil {
+			t.Fatal(err)
+		}
+		next.SetRetrySleep(func(time.Duration) {})
+		d, _ := newTestEngine(t, &stub{}, fc)
+		d.store = next
+		d.procs = procs
+		if _, _, err := d.Recover(); err != nil {
+			t.Fatal(err)
+		}
+		return next
+	}
+	// A start that cannot write the outcome either keeps the process record.
+	if s, _ := restart().LoadState(); len(s.LiveRuns) != 1 {
+		t.Fatal("a start that could not record the run forgot its process record")
+	}
+
+	unblock()
+	if err := os.Chmod(runs, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	next := restart()
+	if run := latestRun(t, next, "run-1"); run.Status != store.StatusFailed || run.Quiet {
+		t.Fatalf("run = %s quiet=%v, want a visible failed row", run.Status, run.Quiet)
+	}
+	if s, _ := next.LoadState(); len(s.LiveRuns) != 0 {
+		t.Fatal("the process record stayed after the run was recorded")
 	}
 }

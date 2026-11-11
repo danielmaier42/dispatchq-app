@@ -227,3 +227,16 @@ func TestCollectorCompletedRateLimit(t *testing.T) {
 		})
 	}
 }
+
+// Only a session the harness named itself counts as confirmed: the id
+// dispatchq assigned up front may never have been taken up.
+func TestCollectorConfirmsOnlyANamedSession(t *testing.T) {
+	c := NewCollector("assigned", "Codex")
+	if c.Result(-1).SessionConfirmed {
+		t.Fatal("the assigned id counts as the harness's session")
+	}
+	c.Add(Event{Type: EventSessionStarted, SessionID: "thread-1"})
+	if res := c.Result(-1); !res.SessionConfirmed || res.SessionID != "thread-1" {
+		t.Fatalf("result = %+v, want the harness's own session confirmed", res)
+	}
+}

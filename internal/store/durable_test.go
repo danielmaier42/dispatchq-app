@@ -211,21 +211,29 @@ func TestRetireTaskRetriesTheQueueRemoval(t *testing.T) {
 	}
 }
 
-// The repair at start removes exactly the one-shots that have run and are
-// still listed: not a recurring task, not one that never ran, not one whose
-// session waits to continue.
+// The repair at start removes exactly the one-shots whose removal a retire
+// still owes: not one queued again by hand under the id of a task that ran,
+// not one whose session waits to continue, not one with a run in flight.
 func TestRepairCompletedOneShots(t *testing.T) {
 	s := openTemp(t)
-	done, fresh, waiting, cron := sampleTask("done"), sampleTask("fresh"), sampleTask("waiting"), sampleTask("cron")
-	cron.Trigger, cron.Cron = task.TriggerCron, "0 3 * * *"
-	if err := s.SaveConfig(Config{Tasks: []task.Task{done, fresh, waiting, cron}}); err != nil {
+	ids := []string{"done", "fresh", "waiting", "readded", "running"}
+	var tasks []task.Task
+	for _, id := range ids {
+		tasks = append(tasks, sampleTask(id))
+	}
+	if err := s.SaveConfig(Config{Tasks: tasks}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.UpdateState(func(st *State) error {
-		for _, id := range []string{"done", "waiting", "cron"} {
+		for _, id := range []string{"done", "waiting", "readded", "running"} {
 			st.MarkCompletedOnce(id)
 		}
+		for _, id := range []string{"done", "waiting", "running"} {
+			st.OweRemoval(id)
+		}
+		st.OweRemoval("gone") // its task already left the queue
 		st.SetPendingResume("waiting", "sess", "claude")
+		st.SetLiveRun(LiveRun{Run: Run{RunID: "r-running", TaskID: "running"}, PID: 4242, ProcessStart: "x"})
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -235,15 +243,56 @@ func TestRepairCompletedOneShots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RepairCompletedOneShots: %v", err)
 	}
-	if len(removed) != 1 || removed[0].ID != "done" {
-		t.Fatalf("removed = %+v, want only the completed one-shot", removed)
+	var gone []string
+	for _, tk := range removed {
+		gone = append(gone, tk.ID)
+	}
+	if strings.Join(gone, ",") != "done" {
+		t.Fatalf("removed = %v, want only the one-shot whose removal was owed", gone)
 	}
 	cfg, _ := s.LoadConfig()
-	var ids []string
+	var queued []string
 	for _, tk := range cfg.Tasks {
-		ids = append(ids, tk.ID)
+		queued = append(queued, tk.ID)
 	}
-	if strings.Join(ids, ",") != "fresh,waiting,cron" {
-		t.Fatalf("queue = %v", ids)
+	if strings.Join(queued, ",") != "fresh,waiting,readded,running" {
+		t.Fatalf("queue = %v", queued)
+	}
+	st, _ := s.LoadState()
+	for id, want := range map[string]bool{"done": false, "gone": false, "waiting": true, "running": true} {
+		if st.IsRemovalOwed(id) != want {
+			t.Fatalf("removal owed for %s = %v, want %v", id, !want, want)
+		}
+	}
+}
+
+// A retire whose removal went through owes nothing; one whose removal failed
+// leaves that owed for the repair.
+func TestRetireTaskRecordsAnOwedRemoval(t *testing.T) {
+	s := openTemp(t)
+	s.sleep = func(time.Duration) {}
+	if err := s.SaveConfig(Config{Tasks: []task.Task{sampleTask("ok"), sampleTask("stuck")}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RetireTask("ok", true); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := s.LoadState(); st.IsRemovalOwed("ok") {
+		t.Fatal("a completed removal is still owed")
+	}
+
+	cfgPath := s.path(configFile)
+	aside := filepath.Join(s.home, "config.aside")
+	if err := os.Rename(cfgPath, aside); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(cfgPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RetireTask("stuck", true); err == nil {
+		t.Fatal("RetireTask into an unreadable queue reported success")
+	}
+	if st, _ := s.LoadState(); !st.IsRemovalOwed("stuck") || !st.IsCompletedOnce("stuck") {
+		t.Fatal("the failed removal is not recorded as owed")
 	}
 }

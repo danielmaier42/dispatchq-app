@@ -943,9 +943,14 @@ func (e *Engine) launchTask(t task.Task, settings store.Settings, resolved provi
 	// no task stuck in the running set (which would block the scheduler). A
 	// quiet-history task is the exception: its runs enter history only if they
 	// end in something worth seeing (see finish), so nothing is written now.
+	// The caller holds e.mu, which finishing runs and the API wait on, so the
+	// start gets one attempt and no pauses. A start history refuses is not
+	// kept for later either: the run does not start, and a record of it
+	// landing later would show a run that never was.
 	if !t.QuietHistory {
-		if err := e.store.AppendRun(rec); err != nil {
+		if err := e.store.TryAppendRun(rec); err != nil {
 			_ = logFile.Close()
+			_ = os.Remove(rec.LogPath)
 			return fmt.Errorf("record run start: %w", err)
 		}
 	}
@@ -1159,7 +1164,11 @@ func (e *Engine) cancelResume(runID string) error {
 		canceled.FinishedAt = &now
 	}
 	if err := e.store.AppendRun(canceled); err != nil {
-		return fmt.Errorf("record canceled resume: %w", err)
+		if !errors.Is(err, store.ErrRunKept) {
+			return fmt.Errorf("record canceled resume: %w", err)
+		}
+		// The resume is canceled; only its record is late.
+		fmt.Fprintf(os.Stderr, "dispatchqd: run %s: record canceled resume: %v\n", runID, err)
 	}
 	e.logStatus(canceled)
 	return nil

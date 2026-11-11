@@ -304,7 +304,37 @@ func (s *Store) AppendRun(r Run) error {
 	case merr != nil:
 		return fmt.Errorf("%w; the record could not be kept for later either: %w", err, merr)
 	}
-	return fmt.Errorf("%w; the record is kept in %s and written to history later", err, s.pendingPath(r.RunID))
+	return fmt.Errorf("%w (%w; it is kept in %s)", ErrRunKept, err, s.pendingPath(r.RunID))
+}
+
+// ErrRunKept is what AppendRun returns for a record history refused but that
+// is kept and will land later (see AppendRun). A caller tells it apart with
+// errors.Is: the record is not lost, only late.
+var ErrRunKept = errors.New("run record kept and written to history later")
+
+// TryAppendRun appends a run event to history in a single attempt, without
+// the pauses of AppendRun, for a caller that holds a lock others wait on. A
+// record history refuses is dropped again, not kept: the caller has to act on
+// the failure, and a record written later behind its back would contradict
+// what it did.
+func (s *Store) TryAppendRun(r Run) error {
+	if _, err := json.Marshal(r); err != nil {
+		return fmt.Errorf("encode run: %w", err)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.queueLocked(r)
+	err := s.flushLocked()
+	if err == nil {
+		return nil
+	}
+	for i := range s.pending {
+		if s.pending[i].RunID == r.RunID {
+			s.pending = append(s.pending[:i], s.pending[i+1:]...)
+			break
+		}
+	}
+	return err
 }
 
 // AppendRunLog appends a line to a run's log file (used to record the final

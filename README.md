@@ -490,9 +490,10 @@ explains it.
   for a few seconds before it counts as failed. A run record history still
   refuses is kept in `runs/<run-id>.pending.json`, written to history ahead of
   the next record, and at the latest at the next daemon start (`wrote N run
-  record(s) to history …` in the daemon log). A one-shot task that ran but was
-  left in the queue is taken out of it at the next start (`removed task … from
-  the queue` in the daemon log).
+  record(s) to history …` in the daemon log). A one-shot task whose removal from
+  the queue failed after it ran is taken out of it at the next start
+  (`removed task … from the queue` in the daemon log), unless a run of it is
+  still going or its session waits to continue.
 
 **Seeing what happened**
 
@@ -2153,10 +2154,12 @@ that.
   due and start right after it; their *waiting* badge says why. Backfill tasks
   never get this turn.
 - **A one-time task runs once.** An *asap* or *earliest start* task leaves the
-  queue when it has run. If one is still listed after it ran, the Queue marks it
-  *already ran* and the Dashboard's **Up next** leaves it out: the scheduler does
-  not start it again. **Run now** runs it by hand; deleting it clears the mark, so
-  a task added later under the same id runs normally.
+  queue when it has run. If the write that removes it fails, the next daemon
+  start removes it. One that is still listed after it ran for another reason
+  (written back into `config.toml` by hand under its old id) stays: the Queue
+  marks it *already ran* and the Dashboard's **Up next** leaves it out, and the
+  scheduler does not start it again. **Run now** runs it by hand; deleting it
+  clears the mark, so a task added later under the same id runs normally.
 - **The pause switch wins over everything.** While *Pause all runs* is on, a tick
   starts nothing and records nothing, `dispatchq run-now` and the app's **Run now**
   are refused, and no task wake is registered (only the heartbeat stays, so the
@@ -2228,7 +2231,7 @@ environment variable):
 | `artifacts/<id>/<file>` | The published files themselves (snapshots copied at publish time). |
 | `notifications.json` | Outbox of notifications sent with `dispatchq notify`, waiting for the daemon to deliver them (normally empty). |
 | `inbox.json` | The last 1000 notifications the daemon sent (title, message, kind, what each points at, read flag), as listed in the Notifications view. An unread failure notification is kept until it is read, however old. |
-| `state.json` | Machine bookkeeping: read/unread flags (runs and artifacts), which artifacts have been notified about, cron anchors, pending-resume sessions (including one a DispatchQ restart cut off), the process of each run in flight (so a restarted daemon can take it back), the provider health you were last told about, the latest credit proof of each API-key account (ping or run, answered or refused), which queue groups are folded shut, dismissed update version, the What's new edition you closed, whether the check for tasks that still use the 1.x names is done. |
+| `state.json` | Machine bookkeeping: read/unread flags (runs and artifacts), which artifacts have been notified about, cron anchors, pending-resume sessions (including one a DispatchQ restart cut off), one-shot tasks whose removal from the queue is still owed, the process of each run in flight (so a restarted daemon can take it back), the provider health you were last told about, the latest credit proof of each API-key account (ping or run, answered or refused), which queue groups are folded shut, dismissed update version, the What's new edition you closed, whether the check for tasks that still use the 1.x names is done. |
 | `dispatchqd.out.log` / `dispatchqd.err.log` | Daemon stdout/stderr on macOS; on Windows the daemon log is `dispatchqd.log`. Every line the daemon prints starts with its local time (RFC 3339, e.g. `2026-11-11T17:05:09+01:00`); a Go crash trace is written as it is. |
 | `../claudeq` | After an update from a 1.x version: a link from the old data folder to this one. |
 | `.lock` / `.daemon.lock` | Lock files, both empty of interest. `.lock` serializes config/state writes between the daemon and a `dispatchq` command; `.daemon.lock` holds the running daemon's pid and is what makes a second daemon on the same store refuse to start. Both are released when the holding process exits, so neither needs clearing by hand. |

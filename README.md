@@ -447,15 +447,30 @@ explains it.
 **Unattended by design**
 
 - **Hung runs are killed** after a configurable idle timeout, whole process
-  group included. Runs left without a process after a crash or power loss are
-  marked interrupted.
+  group included.
+- **Runs cut off by a restart are recorded and notified.** A run whose process
+  ended while no daemon watched it (a crash, a power loss, an update that
+  killed the daemon) gets its outcome at the next start: the one its session
+  transcript shows when the turn had ended (Claude Code), otherwise *failed*
+  as interrupted. This holds for quiet-history runs too, which otherwise
+  leave no trace. It is notified like any other failure, and the daemon log
+  names each run (`run … ended while no daemon watched it`).
+- **An interrupted one-shot continues once.** When DispatchQ itself cuts off a
+  one-shot task's run (the 30-second shutdown grace runs out, or the daemon
+  dies under it), the task is not retired half done and not started over:
+  its next run continues the same session, so the model sees what it already
+  did. The run's reason says so. Cut off a second time, the task is retired.
+  Recurring tasks start their next occurrence fresh as before, and scripts
+  are not continued.
 - **Runs survive a daemon restart.** A run's process does not stop when the
   daemon does (an update, a crash). The next daemon takes the run back: it
   shows as *running* with its process id, its task is not started a second
-  time, *Cancel* and *Continue in Terminal* stop it, and when it ends it is
+  time, *Cancel* and *Continue in Terminal* stop it. When it ends, its
+  outcome and answer are read from its session transcript (Claude Code);
+  where that cannot tell (another harness, a turn that had not ended), it is
   recorded as *failed* with the reason that its exit status and the output
-  written after the restart could not be captured; its session holds the
-  result. The daemon log says `took back run …`. A run an older version
+  written after the restart could not be captured. The daemon log says
+  `took back run …`. A run an older version
   already wrote off as interrupted is taken back the same way when its headless
   harness is still running with that session (Claude Code, within seven days).
   The idle timeout does not apply to a run taken back.
@@ -2209,7 +2224,7 @@ environment variable):
 | `artifacts/<id>/<file>` | The published files themselves (snapshots copied at publish time). |
 | `notifications.json` | Outbox of notifications sent with `dispatchq notify`, waiting for the daemon to deliver them (normally empty). |
 | `inbox.json` | The last 200 notifications the daemon sent (title, message, kind, what each points at, read flag), as listed in the Notifications view. |
-| `state.json` | Machine bookkeeping: read/unread flags (runs and artifacts), which artifacts have been notified about, cron anchors, pending-resume sessions, the process of each run in flight (so a restarted daemon can take it back), the provider health you were last told about, the latest credit proof of each API-key account (ping or run, answered or refused), which queue groups are folded shut, dismissed update version, the What's new edition you closed, whether the check for tasks that still use the 1.x names is done. |
+| `state.json` | Machine bookkeeping: read/unread flags (runs and artifacts), which artifacts have been notified about, cron anchors, pending-resume sessions (including one a DispatchQ restart cut off), the process of each run in flight (so a restarted daemon can take it back), the provider health you were last told about, the latest credit proof of each API-key account (ping or run, answered or refused), which queue groups are folded shut, dismissed update version, the What's new edition you closed, whether the check for tasks that still use the 1.x names is done. |
 | `dispatchqd.out.log` / `dispatchqd.err.log` | Daemon stdout/stderr on macOS; on Windows the daemon log is `dispatchqd.log`. |
 | `../claudeq` | After an update from a 1.x version: a link from the old data folder to this one. |
 | `.lock` / `.daemon.lock` | Lock files, both empty of interest. `.lock` serializes config/state writes between the daemon and a `dispatchq` command; `.daemon.lock` holds the running daemon's pid and is what makes a second daemon on the same store refuse to start. Both are released when the holding process exits, so neither needs clearing by hand. |

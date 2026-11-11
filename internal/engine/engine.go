@@ -943,7 +943,17 @@ func (e *Engine) launchTask(t task.Task, settings store.Settings, resolved provi
 		return fmt.Errorf("create log for run %s: %w", runID, err)
 	}
 
+	// A job whose text lives in a file reads it now, once per run, so the run
+	// executes what the file says at the moment it starts. The run record keeps
+	// what was read, so the Log shows what actually ran even after the file
+	// changes. A file that cannot be read still makes a run: one that fails at
+	// once with the reason, recorded and notified like any other failure, rather
+	// than a job that silently never starts.
+	source, sourceErr := t.ReadSource()
 	snapshot := t
+	if sourceErr == nil {
+		snapshot.Prompt = source
+	}
 	// A run that belongs to no workflow yet starts one under its own id, so a
 	// job it queues has something to inherit and the two read as one piece of
 	// work afterwards.
@@ -999,11 +1009,12 @@ func (e *Engine) launchTask(t task.Task, settings store.Settings, resolved provi
 	// script is a program, not prose — prepending anything to it would break it,
 	// so the same digest reaches it on standard input instead.
 	prompted, stdin := t, ""
+	prompted.Prompt = source
 	if t.IncludeResults && len(deps) > 0 {
 		if t.IsScript() {
 			stdin = workflow.Context(deps)
 		} else {
-			prompted.Prompt = workflow.Context(deps) + "\n" + t.Prompt
+			prompted.Prompt = workflow.Context(deps) + "\n" + source
 		}
 	}
 
@@ -1034,6 +1045,11 @@ func (e *Engine) launchTask(t task.Task, settings store.Settings, resolved provi
 		defer e.wg.Done()
 		defer cancelRun()
 		defer func() { _ = logFile.Close() }()
+		if sourceErr != nil {
+			writeNote(logFile, sourceErr.Error())
+			e.finish(t, resolved.Instance.ID, rec, provider.Result{}, sourceErr)
+			return
+		}
 		res, runErr := e.runGuarded(runCtx, req)
 		e.finish(t, resolved.Instance.ID, rec, res, runErr)
 	}()

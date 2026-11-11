@@ -143,7 +143,7 @@ func TestParseTaskPatchErrors(t *testing.T) {
 		want string
 	}{
 		{"no flags", nil, "no changes given"},
-		{"prompt and prompt-file", []string{"--prompt", "x", "--prompt-file", "p.md"}, "either --prompt or --prompt-file"},
+		{"prompt and prompt-file", []string{"--prompt", "x", "--prompt-file", "p.md"}, "choose one of --prompt, --prompt-file or --source-file"},
 		{"stray argument", []string{"--name", "x", "leftover"}, "unexpected argument"},
 	}
 	for _, tc := range tests {

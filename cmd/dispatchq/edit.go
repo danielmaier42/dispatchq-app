@@ -106,6 +106,11 @@ func printTask(t task.Task) {
 	if t.IsScript() {
 		body = "script"
 	}
+	if t.SourceFile != "" {
+		fmt.Printf("source_file:       %s\n", t.SourceFile)
+		fmt.Printf("\n%s: read from source_file at the start of every run\n", body)
+		return
+	}
 	fmt.Printf("\n%s:\n%s\n", body, t.Prompt)
 }
 
@@ -177,6 +182,7 @@ func cmdEdit(st *store.Store, args []string) error {
 // existing or inherited true.
 type taskSettings struct {
 	kind         string
+	sourceFile   string
 	group        string
 	provider     string
 	pool         string
@@ -193,6 +199,7 @@ type taskSettings struct {
 // flag is left out, e.g. "inherited" for queue; it is appended to each help.
 func (s *taskSettings) register(fs *flag.FlagSet, dflt string) {
 	fs.StringVar(&s.kind, "kind", "", "agent (a prompt for a model) or script (a program, run without a model) (default: "+dflt+")")
+	fs.StringVar(&s.sourceFile, "source-file", "", "read the prompt (or script) from this file at the start of every run, instead of storing it (default: "+dflt+")")
 	fs.StringVar(&s.group, "group", "", "queue group to file the task under; empty = ungrouped (default: "+dflt+")")
 	fs.StringVar(&s.provider, "provider", "", "provider instance to run on; empty = the default provider (default: "+dflt+")")
 	fs.StringVar(&s.pool, "pool", "", "provider pool to run on instead of one provider (dispatchq pool list) (default: "+dflt+")")
@@ -220,6 +227,11 @@ func (s taskSettings) apply(t *task.Task, has func(string) bool) {
 			t.Permissions = task.PermissionsDefault
 			t.Backfill = false
 		}
+	}
+	// A file replaces the inline text: a job has one or the other.
+	if has("source-file") {
+		t.SourceFile = sourceFilePath(s.sourceFile)
+		t.Prompt = ""
 	}
 	// Changing the provider without naming a model drops the old provider's
 	// model, so the new provider's own default applies (the resolution table in
@@ -337,8 +349,8 @@ func parseTaskPatch(args []string, readFile func(string) ([]byte, error)) (taskP
 	if len(p.set) == 0 {
 		return taskPatch{}, fmt.Errorf("no changes given")
 	}
-	if p.has("prompt") && p.has("prompt-file") {
-		return taskPatch{}, fmt.Errorf("choose either --prompt or --prompt-file")
+	if n := countSet(p.has, "prompt", "prompt-file", "source-file"); n > 1 {
+		return taskPatch{}, fmt.Errorf("choose one of --prompt, --prompt-file or --source-file")
 	}
 	if p.has("prompt-file") {
 		data, err := readFile(*promptFile)
@@ -360,6 +372,7 @@ func (p taskPatch) apply(t task.Task) (task.Task, error) {
 	}
 	if p.has("prompt") {
 		t.Prompt = p.prompt
+		t.SourceFile = "" // inline text replaces a file
 	}
 	if p.has("dir") {
 		t.WorkingDir = fromCaller(p.dir)
@@ -404,6 +417,32 @@ func (p taskPatch) apply(t task.Task) (task.Task, error) {
 	return t, nil
 }
 
+// countSet counts how many of the named flags were passed.
+func countSet(has func(string) bool, names ...string) int {
+	n := 0
+	for _, name := range names {
+		if has(name) {
+			n++
+		}
+	}
+	return n
+}
+
+// sourceFilePath makes a --source-file argument absolute against the caller's
+// working directory, so `--source-file ./watch.sh` means the file the caller
+// is looking at, not one relative to wherever the daemon runs. Empty stays
+// empty.
+func sourceFilePath(p string) string {
+	if p == "" {
+		return ""
+	}
+	p = fromCaller(p)
+	if abs, err := filepath.Abs(p); err == nil {
+		return abs
+	}
+	return p
+}
+
 // readPromptFile reads a prompt from a file, or from stdin for "-".
 func readPromptFile(path string) ([]byte, error) {
 	if path == "-" {
@@ -436,6 +475,7 @@ type taskDoc struct {
 	NotifyOnResult  bool   `toml:"notify_on_result"`
 	QuietHistory    bool   `toml:"quiet_history"`
 	Backfill        bool   `toml:"backfill"`
+	SourceFile      string `toml:"source_file"`
 	Prompt          string `toml:"prompt,multiline"`
 }
 
@@ -457,6 +497,9 @@ const taskDocHeader = `# dispatchq task — edit, save, and close this file to a
 #   reasoning_effort   empty = the provider's own; ignored by providers without it
 #   permissions        default | skip  (skip bypasses permission prompts)
 #   quiet_history      true hides successful runs from the Log (frequent watcher jobs)
+#   source_file        absolute path of a file holding the prompt (or script),
+#                      read at the start of every run; leave prompt empty then.
+#                      Empty = the prompt below is the job's text
 #   backfill           true runs only while the provider's weekly allowance would
 #                      otherwise go unused (urgency above dispatchq settings
 #                      --backfill-urgency); never for a script job
@@ -468,7 +511,7 @@ func encodeTaskDoc(t task.Task) ([]byte, error) {
 		Trigger: string(t.Trigger), Cron: t.Cron, Parallel: t.Parallel,
 		Provider: t.Provider, Pool: t.Pool, Model: t.Model, ReasoningEffort: t.ReasoningEffort,
 		Permissions:    string(t.Permissions),
-		NotifyOnResult: t.NotifyOnResult, QuietHistory: t.QuietHistory, Backfill: t.Backfill, Prompt: t.Prompt,
+		NotifyOnResult: t.NotifyOnResult, QuietHistory: t.QuietHistory, Backfill: t.Backfill, SourceFile: t.SourceFile, Prompt: t.Prompt,
 	}
 	if !t.FixedAt.IsZero() {
 		d.FixedAt = t.FixedAt.Local().Format(time.RFC3339)
@@ -500,7 +543,7 @@ func decodeTaskDoc(data []byte, orig task.Task) (task.Task, error) {
 		Trigger: task.Trigger(d.Trigger), Cron: d.Cron, Parallel: d.Parallel,
 		Enabled: d.Enabled, Provider: d.Provider, Pool: d.Pool, Model: d.Model, ReasoningEffort: d.ReasoningEffort,
 		Permissions: task.Permissions(d.Permissions), NotifyOnResult: d.NotifyOnResult,
-		QuietHistory: d.QuietHistory, Backfill: d.Backfill,
+		QuietHistory: d.QuietHistory, Backfill: d.Backfill, SourceFile: strings.TrimSpace(d.SourceFile),
 	}
 	if t.Permissions == "" {
 		t.Permissions = task.PermissionsDefault

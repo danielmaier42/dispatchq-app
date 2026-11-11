@@ -139,6 +139,7 @@ func taskFlags() []Flag {
 	return []Flag{
 		flag("name", "N", "display name"),
 		flag("prompt", "P", "the agent prompt, or the program text of a script job"),
+		pathFlag("source-file", "keep the prompt or script in this file instead; read at the start of every run"),
 		pathFlag("dir", "working directory"),
 		flag("kind", "agent|script", "agent: send the prompt to a model; script: run it as a program, no model"),
 		flag("group", "G", "queue group"),

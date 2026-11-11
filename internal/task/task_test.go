@@ -2,6 +2,8 @@ package task
 
 import (
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -255,5 +257,77 @@ func TestBackfillIsForAgentJobsOnly(t *testing.T) {
 	tk.Kind = KindScript
 	if err := tk.Validate(); err == nil {
 		t.Fatal("a script job was accepted as backfill work")
+	}
+}
+
+func TestValidateSourceFile(t *testing.T) {
+	abs := filepath.Join(t.TempDir(), "brief.md")
+	cases := []struct {
+		name string
+		mod  func(Task) Task
+		want string // "" = valid
+	}{
+		{"file instead of inline", func(t Task) Task { t.Prompt, t.SourceFile = "", abs; return t }, ""},
+		{"script from a file", func(t Task) Task { t.Kind, t.Prompt, t.SourceFile = KindScript, "", abs; return t }, ""},
+		{"both", func(t Task) Task { t.SourceFile = abs; return t }, "inline or from a source_file, not both"},
+		{"relative path", func(t Task) Task { t.Prompt, t.SourceFile = "", "brief.md"; return t }, "must be an absolute path"},
+		{"neither", func(t Task) Task { t.Prompt = ""; return t }, "missing prompt"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.mod(valid()).Validate()
+			if tc.want == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !errors.Is(err, ErrInvalidTask) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want ErrInvalidTask containing %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestReadSource(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, content string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	inline := valid()
+	if got, err := inline.ReadSource(); err != nil || got != "do the thing" {
+		t.Fatalf("inline: got %q, %v", got, err)
+	}
+
+	fromFile := valid()
+	fromFile.Prompt, fromFile.SourceFile = "", write("brief.md", "Review the open PRs.\n")
+	if got, err := fromFile.ReadSource(); err != nil || got != "Review the open PRs.\n" {
+		t.Fatalf("file: got %q, %v", got, err)
+	}
+
+	script := valid()
+	script.Kind = KindScript
+	script.Prompt = ""
+	for name, tc := range map[string]struct {
+		path string
+		want string
+	}{
+		"missing":  {filepath.Join(dir, "gone.sh"), "script file " + filepath.Join(dir, "gone.sh") + " does not exist"},
+		"empty":    {write("empty.sh", " \n"), "is empty"},
+		"too big":  {write("big.sh", strings.Repeat("x", MaxSourceFileSize+1)), "is larger than"},
+		"a folder": {dir, "read script file"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := script
+			s.SourceFile = tc.path
+			_, err := s.ReadSource()
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want it to contain %q", err, tc.want)
+			}
+		})
 	}
 }

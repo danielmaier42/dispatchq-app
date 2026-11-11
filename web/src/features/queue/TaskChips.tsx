@@ -82,6 +82,13 @@ export function taskChips(t: QueueTask, ctx: QueueContext): Chip[] {
       tone: 'neutral',
       tip: 'Runs as a program, without a model: no provider, no usage, and a rate limit never holds it up',
     })
+  if (t.source_file)
+    out.push({
+      key: 'file',
+      label: 'File',
+      tone: 'neutral',
+      tip: `Reads its ${t.kind === 'script' ? 'script' : 'prompt'} from ${t.source_file} at the start of every run`,
+    })
   if (t.backfill)
     out.push({
       key: 'backfill',

@@ -1,8 +1,8 @@
-import {Bot, FileCode, FileText, MessageSquareText, Terminal} from 'lucide-react'
+import {Bot, File, FileCode, FileText, MessageSquareText, PenLine, Terminal} from 'lucide-react'
 import {Field} from '@/components/ui/field'
 import {Input, Textarea} from '@/components/ui/input'
 import {Segmented} from '@/components/ui/segmented'
-import type {TaskKind} from '@/lib/types'
+import type {TaskKind, TaskSource} from '@/lib/types'
 import type {FieldErrors, TaskForm} from '../form'
 import {PromptReview} from '../review/PromptReview'
 import {GroupCombobox} from './GroupCombobox'
@@ -94,8 +94,43 @@ export function PromptSection({
   freshReview: boolean
 }) {
   const script = form.kind === 'script'
+  const fromFile = form.source === 'file'
+  const noun = script ? 'script' : 'prompt'
   return (
-    <EditorSection icon={script ? FileCode : MessageSquareText} title={script ? 'Script' : 'Prompt'}>
+    <EditorSection
+      icon={script ? FileCode : MessageSquareText}
+      title={script ? 'Script' : 'Prompt'}
+      aside={
+        <Segmented<TaskSource>
+          size="sm"
+          aria-label={script ? 'Script source' : 'Prompt source'}
+          value={form.source}
+          onValueChange={(source) => update({source})}
+          options={[
+            {
+              value: 'inline',
+              label: (
+                <>
+                  <PenLine />
+                  Inline
+                </>
+              ),
+              tip: `The ${noun} is written here and stored with the task.`,
+            },
+            {
+              value: 'file',
+              label: (
+                <>
+                  <File />
+                  File
+                </>
+              ),
+              tip: `The ${noun} stays in a file of yours and is read at the start of every run.`,
+            },
+          ]}
+        />
+      }
+    >
       {script && (
         <p className="rounded-md bg-surface-2 px-3 py-2 text-[12px] leading-relaxed text-muted-foreground">
           Runs without a model: no provider, no usage, and a rate limit never holds it up. Start it with a
@@ -105,26 +140,48 @@ export function PromptSection({
           jobs with <code className={mono}>"$DISPATCHQ_BIN" queue --prompt …</code>.
         </p>
       )}
-      <Field htmlFor="te-prompt" error={errors.prompt}>
-        <Textarea
-          id="te-prompt"
-          aria-label={script ? 'Script' : 'Prompt'}
-          value={form.prompt}
-          aria-invalid={!!errors.prompt}
-          spellCheck={!script}
-          placeholder={script ? '#!/bin/zsh\n\ncurl -s …' : 'What should Claude do?'}
-          className={`${mono} min-h-[220px] leading-relaxed`}
-          onChange={(e) => update({prompt: e.target.value})}
-        />
-      </Field>
-      <PromptReview
-        kind={script ? 'script' : 'task'}
-        prompt={form.prompt}
-        workingDir={form.workingDir}
-        fresh={freshReview}
-        onApply={(revised) => update({prompt: revised})}
-        className="-mt-1"
-      />
+      {fromFile ? (
+        <Field
+          label={script ? 'Script file' : 'Prompt file'}
+          htmlFor="te-sourceFile"
+          error={errors.sourceFile}
+          hint={`Read at the start of every run, so edits to the file apply to the next run. If the file is missing then, the run fails and says so.`}
+        >
+          <Input
+            id="te-sourceFile"
+            value={form.sourceFile}
+            aria-invalid={!!errors.sourceFile}
+            placeholder={script ? '/Users/me/scripts/watch.sh' : '/Users/me/briefs/nightly.md'}
+            spellCheck={false}
+            autoComplete="off"
+            className={mono}
+            onChange={(e) => update({sourceFile: e.target.value})}
+          />
+        </Field>
+      ) : (
+        <>
+          <Field htmlFor="te-prompt" error={errors.prompt}>
+            <Textarea
+              id="te-prompt"
+              aria-label={script ? 'Script' : 'Prompt'}
+              value={form.prompt}
+              aria-invalid={!!errors.prompt}
+              spellCheck={!script}
+              placeholder={script ? '#!/bin/zsh\n\ncurl -s …' : 'What should Claude do?'}
+              className={`${mono} min-h-[220px] leading-relaxed`}
+              onChange={(e) => update({prompt: e.target.value})}
+            />
+          </Field>
+          <PromptReview
+            kind={script ? 'script' : 'task'}
+            prompt={form.prompt}
+            workingDir={form.workingDir}
+            fresh={freshReview}
+            onApply={(revised) => update({prompt: revised})}
+            className="-mt-1"
+          />
+        </>
+      )}
     </EditorSection>
   )
 }

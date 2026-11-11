@@ -21,6 +21,9 @@ export type TaskTrigger = 'asap' | 'fixed' | 'cron'
 // "agent" runs the prompt through a provider; "script" runs it as a shell script without a model.
 export type TaskKind = 'agent' | 'script'
 
+// Where a job's text comes from: stored with the task, or read from a file on every run.
+export type TaskSource = 'inline' | 'file'
+
 // "skip" bypasses the harness's permission prompts.
 export type TaskPermissions = 'default' | 'skip'
 
@@ -30,7 +33,12 @@ export interface Task {
   name: string
   // Absent means "agent".
   kind?: TaskKind
+  // Empty when source_file is set.
   prompt: string
+  // Absolute path of a file holding the prompt (or script), read at the start
+  // of every run instead of storing the text. In a run's task snapshot, prompt
+  // holds what that run read from it.
+  source_file?: string
   working_dir: string
   // "" when the task is in no group.
   group: string

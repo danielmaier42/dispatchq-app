@@ -33,6 +33,16 @@ func ExportTask(s *store.Store, id string, w io.Writer, now time.Time) (task.Tas
 		return task.Task{}, fmt.Errorf("%w: %q", ErrNotFound, id)
 	}
 	t := cfg.Tasks[idx]
+	// A path names a file on this machine, so it cannot travel. The bundle
+	// carries what the file says now instead, and opens elsewhere as an inline
+	// job; whoever imports it can point it at a file of their own.
+	if t.SourceFile != "" {
+		text, err := t.ReadSource()
+		if err != nil {
+			return task.Task{}, fmt.Errorf("export task %q: %w", id, err)
+		}
+		t.Prompt, t.SourceFile = text, ""
+	}
 	if err := bundle.Write(w, t, exportHint(cfg, t), now); err != nil {
 		return task.Task{}, fmt.Errorf("export task %q: %w", id, err)
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,13 +29,15 @@ var writeRetries = []time.Duration{200 * time.Millisecond, time.Second, 3 * time
 // pendingSuffix names the fallback file of a run record history did not take.
 const pendingSuffix = ".pending.json"
 
-// retry runs fn until it succeeds or the attempts are used up, returning the
-// last error.
+// retry runs fn until it succeeds, fails for a reason another attempt cannot
+// change, or the attempts are used up, returning the last error. fn takes
+// whatever locks it needs itself: the pauses are spent holding none, so the
+// rest of the daemon is not held up while a write waits for the disk.
 func (s *Store) retry(fn func() error) error {
 	err := fn()
 	for _, d := range writeRetries {
-		if err == nil {
-			return nil
+		if err == nil || !transient(err) {
+			return err
 		}
 		if s.sleep != nil {
 			s.sleep(d)
@@ -44,6 +47,44 @@ func (s *Store) retry(fn func() error) error {
 		err = fn()
 	}
 	return err
+}
+
+// transient reports whether err came from the file system, which is what a
+// full disk or a system out of file handles produces and what can pass. A
+// config that does not parse or a task that does not validate fails the same
+// way every time.
+func transient(err error) bool {
+	var pathErr *fs.PathError
+	var linkErr *os.LinkError
+	var sysErr *os.SyscallError
+	return errors.As(err, &pathErr) || errors.As(err, &linkErr) || errors.As(err, &sysErr)
+}
+
+// appendRun is AppendRun's work: it queues r (only on the first attempt) and
+// writes everything waiting.
+func (s *Store) appendRun(r Run, first bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if first {
+		s.queueLocked(r)
+	}
+	return s.flushLocked()
+}
+
+// keepRun writes the fallback file of every record still waiting, after the
+// attempts to write history ran out. It returns whether r is still waiting
+// (another write may have taken it meanwhile) and the error keeping it.
+func (s *Store) keepRun(r Run) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	waiting := false
+	for _, p := range s.pending {
+		waiting = waiting || p.RunID == r.RunID
+	}
+	if !waiting {
+		return false, nil
+	}
+	return true, s.markLocked()
 }
 
 // pendingPath is the fallback file of a run record history did not take.
@@ -89,18 +130,23 @@ func (s *Store) flushLocked() error {
 		_ = f.Close()
 		return fmt.Errorf("stat history: %w", err)
 	}
-	if _, err := f.Write(buf.Bytes()); err != nil {
-		_ = f.Truncate(info.Size())
+	if n, err := f.Write(buf.Bytes()); err != nil {
+		// Cut back only what this write left. A file that grew by more holds
+		// another process's record behind it, which must not go.
+		if after, serr := f.Stat(); serr == nil && after.Size() == info.Size()+int64(n) {
+			_ = f.Truncate(info.Size())
+		}
 		_ = f.Close()
 		return fmt.Errorf("write history: %w", err)
 	}
 	if err := f.Close(); err != nil {
 		return fmt.Errorf("close history: %w", err)
 	}
-	flushed := s.pending
 	s.pending = nil
-	for _, r := range flushed {
-		s.dropMarkerLocked(r.RunID)
+	// Every fallback file now stands for a record history holds, including
+	// one an earlier write could not remove.
+	for id := range s.marked {
+		s.dropMarkerLocked(id)
 	}
 	return nil
 }
@@ -177,7 +223,10 @@ func (s *Store) ReplayPendingRuns() (int, error) {
 			errs = append(errs, fmt.Errorf("kept run %s is not a run record", filepath.Base(path)))
 			continue
 		}
-		if have, ok := latest[r.RunID]; ok && sameRun(have, r) {
+		// History already saying the same, or saying the run ended where the
+		// file says it was still going, has the newer word: the file is one a
+		// write could not remove after history took a later record.
+		if have, ok := latest[r.RunID]; ok && (sameRun(have, r) || have.Status.Terminal() && !r.Status.Terminal()) {
 			if err := os.Remove(path); err != nil {
 				errs = append(errs, fmt.Errorf("remove kept run %s: %w", r.RunID, err))
 			}
@@ -208,47 +257,49 @@ func sameRun(a, b Run) bool {
 }
 
 // RetireTask ends a task's waiting session and, for a one-shot task, marks it
-// completed and takes it out of the queue, in one locked update: another
-// writer never sees the task marked done but still queued. Each half is tried
-// again on failure (see writeRetries). The mark is written first, because it
-// is what keeps the task from starting a second time; should the queue still
-// refuse the removal, the task is completed but listed, and the next daemon
-// start removes it (see RepairCompletedOneShots).
+// completed and takes it out of the queue, in one locked update, so another
+// writer does not see the task marked done but still queued. A failure the
+// disk may get over is tried again (see writeRetries), with no lock held
+// between the attempts, and a half already written is not written twice. The
+// mark is written first, because it is what keeps the task from starting a
+// second time; should the queue still refuse the removal, the task is
+// completed but listed, and the next daemon start removes it (see
+// RepairCompletedOneShots).
 func (s *Store) RetireTask(taskID string, oneShot bool) error {
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	return s.withWriteLock(func() error {
-		err := s.retry(func() error {
-			st, err := s.LoadState()
-			if err != nil {
-				return err
+	marked := false
+	return s.retry(func() error {
+		s.writeMu.Lock()
+		defer s.writeMu.Unlock()
+		return s.withWriteLock(func() error {
+			if !marked {
+				st, err := s.LoadState()
+				if err != nil {
+					return fmt.Errorf("mark task %q completed: %w", taskID, err)
+				}
+				st.ClearPendingResume(taskID)
+				if oneShot {
+					st.MarkCompletedOnce(taskID)
+				}
+				if err := s.SaveState(st); err != nil {
+					return fmt.Errorf("mark task %q completed: %w", taskID, err)
+				}
+				marked = true
 			}
-			st.ClearPendingResume(taskID)
-			if oneShot {
-				st.MarkCompletedOnce(taskID)
+			if !oneShot {
+				return nil
 			}
-			return s.SaveState(st)
-		})
-		if err != nil {
-			return fmt.Errorf("mark task %q completed: %w", taskID, err)
-		}
-		if !oneShot {
-			return nil
-		}
-		err = s.retry(func() error {
 			cfg, err := s.LoadConfig()
 			if err != nil {
-				return err
+				return fmt.Errorf("remove completed task %q from the queue: %w", taskID, err)
 			}
 			if !removeTask(&cfg, taskID) {
 				return nil
 			}
-			return s.SaveConfig(cfg)
+			if err := s.SaveConfig(cfg); err != nil {
+				return fmt.Errorf("remove completed task %q from the queue: %w", taskID, err)
+			}
+			return nil
 		})
-		if err != nil {
-			return fmt.Errorf("remove completed task %q from the queue: %w", taskID, err)
-		}
-		return nil
 	})
 }
 

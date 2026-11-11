@@ -288,15 +288,20 @@ func (s *Store) AppendRun(r Run) error {
 		return fmt.Errorf("encode run: %w", err)
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.queueLocked(r)
-	err := s.retry(s.flushLocked)
+	first := true
+	err := s.retry(func() error {
+		err := s.appendRun(r, first)
+		first = false
+		return err
+	})
 	if err == nil {
 		return nil
 	}
-	if merr := s.markLocked(); merr != nil {
+	waiting, merr := s.keepRun(r)
+	switch {
+	case !waiting:
+		return nil // a write in between took it
+	case merr != nil:
 		return fmt.Errorf("%w; the record could not be kept for later either: %w", err, merr)
 	}
 	return fmt.Errorf("%w; the record is kept in %s and written to history later", err, s.pendingPath(r.RunID))

@@ -28,13 +28,14 @@ export const HISTORY: Choice[] = [
   [100, '100 runs'],
   [500, '500 runs'],
   [1000, '1000 runs'],
+  [3000, '3000 runs'],
   [-1, 'Unlimited'],
 ]
 
 // 0 is "the built-in default" in the store; the form shows what that means.
 export const heartbeatValue = (v: number) => v || 60
 export const idleValue = (v: number) => (v === 0 ? 30 : v)
-export const historyValue = (v: number) => (v === 0 ? 500 : v)
+export const historyValue = (v: number) => (v === 0 ? 3000 : v)
 
 export function choiceOptions(
   choices: Choice[],

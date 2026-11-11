@@ -308,6 +308,101 @@ func TestPruneHistoryKeepsRecentAndDeletesLogs(t *testing.T) {
 	}
 }
 
+// An unread run that did not succeed is an outcome nobody has seen yet;
+// pruning must not take it, whatever its age. Read runs and successes go as
+// before. A run still in flight keeps its record even once read.
+func TestPruneHistoryKeepsUnreadRunsThatDidNotSucceed(t *testing.T) {
+	s := openTemp(t)
+	runs := []Run{
+		{RunID: "old-failed", Status: StatusFailed},
+		{RunID: "old-auth", Status: StatusAuthError},
+		{RunID: "old-canceled", Status: StatusCanceled},
+		{RunID: "old-interrupted", Status: StatusFailed, Error: InterruptedError},
+		{RunID: "old-limited", Status: StatusRateLimited},
+		{RunID: "old-running-read", Status: StatusRunning},
+		{RunID: "old-failed-read", Status: StatusFailed},
+		{RunID: "old-success", Status: StatusSuccess},
+		{RunID: "new-1", Status: StatusSuccess},
+		{RunID: "new-2", Status: StatusSuccess},
+	}
+	for _, r := range runs {
+		r.TaskID = "a"
+		r.LogPath = s.LogPath(r.RunID)
+		if err := s.AppendRun(r); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(r.LogPath, []byte("log"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.UpdateState(func(st *State) error {
+		st.MarkRead("old-failed-read")
+		st.MarkRead("old-running-read")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PruneHistory(2); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := s.Runs()
+	var ids []string
+	for _, r := range got {
+		ids = append(ids, r.RunID)
+	}
+	want := []string{"old-failed", "old-auth", "old-canceled", "old-interrupted", "old-limited", "old-running-read", "new-1", "new-2"}
+	if !reflect.DeepEqual(ids, want) {
+		t.Fatalf("kept %v, want %v", ids, want)
+	}
+	for _, id := range []string{"old-failed-read", "old-success"} {
+		if _, err := os.Stat(s.LogPath(id)); !os.IsNotExist(err) {
+			t.Fatalf("log of dropped run %s should be deleted", id)
+		}
+	}
+	if _, err := os.Stat(s.LogPath("old-failed")); err != nil {
+		t.Fatal("log of a kept unread failure should remain")
+	}
+}
+
+// With a large limit history is rewritten in batches, not after every run:
+// nothing changes until more than a tenth of the limit could go, and then it
+// goes back down to the limit.
+func TestPruneHistoryRewritesInBatches(t *testing.T) {
+	s := openTemp(t)
+	const limit = 100
+	add := func(from, to int) {
+		t.Helper()
+		for i := from; i < to; i++ {
+			if err := s.AppendRun(Run{RunID: fmt.Sprintf("r%03d", i), TaskID: "a", Status: StatusSuccess}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	count := func() int {
+		t.Helper()
+		runs, err := s.Runs()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(runs)
+	}
+	add(0, limit+limit/10)
+	if err := s.PruneHistory(limit); err != nil {
+		t.Fatal(err)
+	}
+	if n := count(); n != limit+limit/10 {
+		t.Fatalf("history holds %d runs after a prune within the slack, want %d untouched", n, limit+limit/10)
+	}
+	add(limit+limit/10, limit+limit/10+1)
+	if err := s.PruneHistory(limit); err != nil {
+		t.Fatal(err)
+	}
+	runs, _ := s.Runs()
+	if len(runs) != limit || runs[0].RunID != fmt.Sprintf("r%03d", limit/10+1) {
+		t.Fatalf("history holds %d runs from %s, want %d from r%03d", len(runs), runs[0].RunID, limit, limit/10+1)
+	}
+}
+
 func TestIdleTimeoutAndHistoryDefaults(t *testing.T) {
 	var s Settings
 	if s.IdleTimeout() != 30*time.Minute {
@@ -323,8 +418,8 @@ func TestIdleTimeoutAndHistoryDefaults(t *testing.T) {
 	}
 
 	var h Settings
-	if h.RunHistoryLimit() != 500 {
-		t.Fatalf("default history = %d, want 500", h.RunHistoryLimit())
+	if h.RunHistoryLimit() != 3000 {
+		t.Fatalf("default history = %d, want 3000", h.RunHistoryLimit())
 	}
 	h.MaxRunHistory = -1
 	if h.RunHistoryLimit() != 0 {

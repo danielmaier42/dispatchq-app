@@ -15,17 +15,20 @@ export function ChatLog({
   entries,
   live,
   promptTitle = 'Prompt',
+  promptSource,
 }: {
   prompt: string
   entries: LogEntry[]
   live: boolean
   // A script run's "prompt" is the script it ran.
   promptTitle?: string
+  // The file the run read its prompt or script from, when it was not inline.
+  promptSource?: string
 }) {
   const last = entries.length - 1
   return (
     <div className="mx-auto flex max-w-[820px] flex-col gap-3">
-      {prompt.trim() && <UserMessage who="You" text={prompt} title={promptTitle} />}
+      {prompt.trim() && <UserMessage who="You" text={prompt} title={promptTitle} source={promptSource} />}
       {entries.map((e, i) => {
         switch (e.kind) {
           case 'message':
@@ -77,10 +80,25 @@ function Who({icon, children, className}: {icon: ReactNode; children: ReactNode;
   )
 }
 
-function UserMessage({who, text, title}: {who: string; text: string; title?: string}) {
+function UserMessage({
+  who,
+  text,
+  title,
+  source,
+}: {
+  who: string
+  text: string
+  title?: string
+  source?: string
+}) {
   return (
     <div className="group/msg relative ml-auto max-w-[88%] rounded-xl rounded-tr-sm border border-accent/15 bg-accent-soft px-3.5 py-2.5">
       <Who icon={<User />}>{title ?? who}</Who>
+      {source && (
+        <p className="-mt-0.5 mb-1.5 font-mono text-[11.5px] break-all text-muted-foreground">
+          read from {source}
+        </p>
+      )}
       <Expandable long={isLong(text)}>
         <RichText text={text} />
       </Expandable>

@@ -1046,7 +1046,6 @@ func (e *Engine) launchTask(t task.Task, settings store.Settings, resolved provi
 		defer cancelRun()
 		defer func() { _ = logFile.Close() }()
 		if sourceErr != nil {
-			writeNote(logFile, sourceErr.Error())
 			e.finish(t, resolved.Instance.ID, rec, provider.Result{}, sourceErr)
 			return
 		}

@@ -123,10 +123,8 @@ function RunLogPanel({runId, mode, setMode}: {runId: string; mode: Mode; setMode
               prompt={prompt}
               entries={entries}
               live={live}
-              promptTitle={
-                (script ? 'Script' : 'Prompt') +
-                (run?.task?.source_file ? ' read from ' + run.task.source_file : '')
-              }
+              promptTitle={script ? 'Script' : 'Prompt'}
+              promptSource={run?.task?.source_file}
             />
           )}
           {live && log !== undefined && (

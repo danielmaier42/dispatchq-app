@@ -34,6 +34,20 @@ export type FieldKey =
   'name' | 'group' | 'prompt' | 'sourceFile' | 'workingDir' | 'fixedAt' | 'cron' | 'target'
 export type FieldErrors = Partial<Record<FieldKey, string>>
 
+// The order the fields appear in the editor, so the first complaint is the one
+// in view. Every field validate can complain about must be here: one that is
+// missing lets the form go to the daemon with the problem unreported.
+export const FIELD_ORDER: FieldKey[] = [
+  'name',
+  'group',
+  'fixedAt',
+  'cron',
+  'prompt',
+  'sourceFile',
+  'workingDir',
+  'target',
+]
+
 // The daemon's limit (task.MaxGroupLen): a group name is a section header.
 export const MAX_GROUP_LEN = 60
 

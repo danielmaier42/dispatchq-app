@@ -2,6 +2,7 @@ import {describe, expect, it} from 'vitest'
 import type {Task} from '@/lib/types'
 import {
   buildPayload,
+  FIELD_ORDER,
   carriedFields,
   fieldForError,
   formFromTask,
@@ -167,5 +168,15 @@ describe('source file', () => {
   })
   it('files a source_file refusal under the file field', () => {
     expect(fieldForError('invalid task: source_file "x" must be an absolute path')).toBe('sourceFile')
+  })
+})
+
+describe('FIELD_ORDER', () => {
+  it('holds every field validate complains about, so none is skipped on save', () => {
+    const bad = [
+      {...formFromTask({}), trigger: 'fixed' as const, group: 'x'.repeat(61)},
+      {...formFromTask({}), source: 'file' as const, sourceFile: 'relative.md'},
+    ]
+    for (const f of bad) for (const k of Object.keys(validate(f))) expect(FIELD_ORDER).toContain(k)
   })
 })

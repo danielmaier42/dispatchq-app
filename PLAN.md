@@ -186,6 +186,7 @@ Thin client over the daemon's local API:
 | `name` | display name |
 | `kind` | `agent` (default, and what an absent value means) \| `script` — a script job runs `prompt` as a program, with no provider, model or allowance |
 | `prompt` | the instruction sent to Claude, or the script itself for `kind = "script"` (FA-01) |
+| `source_file` | optional absolute path that replaces `prompt`: the prompt (or script) is read from this file at the start of every run, and a file that cannot be read fails that run with the reason. A task has `prompt` or `source_file`, never both |
 | `working_dir` | task context / repo path (FA-01, FA-03) |
 | `trigger` | `asap` \| `fixed` \| `cron` (D7, FA-04/18) |
 | `fixed_at` | timestamp, for `fixed` (earliest start, FA-08) |

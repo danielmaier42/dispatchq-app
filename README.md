@@ -1758,7 +1758,8 @@ the record. Mark such a task **Quiet history** (the switch in the task form, or
   **Show hidden runs** is on (see [The app](#the-app)), it is never unread,
   and `dispatchq status` lists it only with `--hidden`. Hidden runs are kept
   for **48 hours, at most the newest 200 per task**, and are then deleted with
-  their logs. They do not count against *Keep run history*, so a watcher
+  their logs, 20 or more at a time (so the history file is not rewritten on
+  every tick, a few can stay a little longer). They do not count against *Keep run history*, so a watcher
   that ticks every five minutes never pushes a real run out of the record.
 - A run that **fails, hits an auth problem, is cancelled, or is paused by the
   rate limit is recorded** with its log, unread, exactly like an ordinary run:

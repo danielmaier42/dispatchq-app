@@ -273,21 +273,26 @@ func (s *Store) AppendRun(r Run) error {
 		return fmt.Errorf("encode run: %w", err)
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	// The cross-process lock keeps the append out of another process's
+	// rewrite of history (PruneHistory, PruneQuietRuns), which would
+	// otherwise replace the file with a copy that lacks this line.
+	return s.withWriteLock(func() error {
+		s.mu.Lock()
+		defer s.mu.Unlock()
 
-	f, err := os.OpenFile(s.path(historyFile), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return fmt.Errorf("open history: %w", err)
-	}
-	if _, err := f.Write(append(line, '\n')); err != nil {
-		_ = f.Close()
-		return fmt.Errorf("write history: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("close history: %w", err)
-	}
-	return nil
+		f, err := os.OpenFile(s.path(historyFile), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err != nil {
+			return fmt.Errorf("open history: %w", err)
+		}
+		if _, err := f.Write(append(line, '\n')); err != nil {
+			_ = f.Close()
+			return fmt.Errorf("write history: %w", err)
+		}
+		if err := f.Close(); err != nil {
+			return fmt.Errorf("close history: %w", err)
+		}
+		return nil
+	})
 }
 
 // AppendRunLog appends a line to a run's log file (used to record the final
@@ -414,8 +419,18 @@ func (s *Store) PruneHistory(limit int) error {
 	if limit <= 0 {
 		return nil
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	// The rewrite below replaces the file: the cross-process lock keeps
+	// another process's AppendRun from landing in between and being lost.
+	return s.withWriteLock(func() error {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.pruneHistoryLocked(limit)
+	})
+}
+
+// pruneHistoryLocked is PruneHistory for a caller holding the write lock and
+// s.mu.
+func (s *Store) pruneHistoryLocked(limit int) error {
 
 	latest, order, err := s.readHistoryLocked()
 	if err != nil {

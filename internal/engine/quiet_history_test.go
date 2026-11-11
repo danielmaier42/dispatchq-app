@@ -95,7 +95,10 @@ func TestQuietRunsDoNotCrowdOutRealHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.WaitIdle()
-	for range 5 {
+	// More ticks than the store lets expire before it rewrites history (its
+	// prune slack of 20), so their expiry below is due as one batch.
+	const ticks = 21
+	for range ticks {
 		fc.Advance(15 * time.Minute)
 		if err := e.RunTaskNow(context.Background(), "watch"); err != nil {
 			t.Fatal(err)
@@ -104,10 +107,10 @@ func TestQuietRunsDoNotCrowdOutRealHistory(t *testing.T) {
 	}
 	runs, _ := st.Runs()
 	if v := store.VisibleRuns(runs); len(v) != 1 || v[0].TaskID != "real" {
-		t.Fatalf("the real run must survive five quiet ticks under a limit of 2: %+v", runs)
+		t.Fatalf("the real run must survive the quiet ticks under a limit of 2: %+v", runs)
 	}
-	if len(runs) != 6 {
-		t.Fatalf("all five quiet ticks are within their retention: got %d runs", len(runs))
+	if len(runs) != ticks+1 {
+		t.Fatalf("all quiet ticks are within their retention: got %d runs", len(runs))
 	}
 
 	// Two days later the next tick finds the earlier ones expired.

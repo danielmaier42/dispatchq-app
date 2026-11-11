@@ -50,7 +50,10 @@ export function LogView() {
     <ViewLayout
       title="Log"
       subtitle={runs?.length ? `${runs.length} run${runs.length === 1 ? '' : 's'}` : undefined}
-      toolbar={runs?.length ? <LogToolbar f={f} menus={menus} /> : undefined}
+      // The bar stays once the list is loaded, even empty: an install whose
+      // only runs are hidden needs its Show hidden runs switch to see them, and
+      // with the switch on, its chip is the way to turn it off.
+      toolbar={runs || state.hidden ? <LogToolbar f={f} menus={menus} /> : undefined}
     >
       {!runs ? (
         runsQuery.isError ? (
@@ -67,7 +70,11 @@ export function LogView() {
         <EmptyState
           icon={<History />}
           title="Nothing logged yet"
-          description="Runs will appear here after tasks execute."
+          description={
+            state.hidden
+              ? 'No run is recorded, hidden runs included. Runs will appear here after tasks execute.'
+              : 'Runs will appear here after tasks execute. Successful runs of quiet-history tasks are hidden; Filter → Show hidden runs lists them.'
+          }
         />
       ) : !filtered.length ? (
         <EmptyState

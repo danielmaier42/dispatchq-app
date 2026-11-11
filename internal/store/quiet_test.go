@@ -75,6 +75,10 @@ func TestPruneQuietRunsDropsExpiredAndSurplusQuietRunsOnly(t *testing.T) {
 		{RunID: "old-real", TaskID: "real", StartedAt: old, FinishedAt: &old, Status: StatusSuccess},
 		{RunID: "old-quiet", TaskID: "watch", StartedAt: old, FinishedAt: &old, Status: StatusSuccess, Quiet: true},
 	}
+	// Enough expired ones to make a batch (see quietPruneSlack).
+	for i := range quietPruneSlack {
+		runs = append(runs, Run{RunID: fmt.Sprintf("old-%02d", i), TaskID: "watch", StartedAt: old, FinishedAt: &old, Status: StatusSuccess, Quiet: true})
+	}
 	// One more than a task may keep, all fresh: the oldest of them goes.
 	for i := range QuietRunsPerTask + 1 {
 		at := fresh.Add(time.Duration(i) * time.Second)
@@ -128,5 +132,88 @@ func TestVisibleRunsLeavesOutQuietRuns(t *testing.T) {
 	got := VisibleRuns(runs)
 	if len(got) != 2 || got[0].RunID != "a" || got[1].RunID != "b" {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+// The daemon and a `dispatchq run-now` process write history through separate
+// Store values. A rewrite by one must never drop a run the other appended
+// meanwhile.
+func TestHistoryRewritesDoNotLoseAnotherProcesssAppends(t *testing.T) {
+	home := t.TempDir()
+	daemon, err := Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cli, err := Open(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	old := now.Add(-QuietRunMaxAge - time.Hour)
+	const appends = 150
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := range appends {
+			if err := daemon.AppendRun(Run{RunID: fmt.Sprintf("real-%03d", i), TaskID: "real", StartedAt: now, Status: StatusFailed}); err != nil {
+				t.Error(err)
+				return
+			}
+		}
+	}()
+	// Meanwhile the other process keeps expiring a batch of hidden runs, and
+	// with them rewriting the whole file.
+	for round := 0; ; round++ {
+		select {
+		case <-done:
+		default:
+			for i := range quietPruneSlack + 1 {
+				id := fmt.Sprintf("q-%d-%d", round, i)
+				if err := cli.AppendRun(Run{RunID: id, TaskID: "watch", StartedAt: old, FinishedAt: &old, Status: StatusSuccess, Quiet: true}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := cli.PruneQuietRuns(now); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		break
+	}
+	runs, err := daemon.Runs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(VisibleRuns(runs)); got != appends {
+		t.Fatalf("the rewrites lost %d of %d appended runs", appends-got, appends)
+	}
+}
+
+// Expired hidden runs are dropped in batches, so a watcher past its retention
+// does not rewrite the whole history on every tick.
+func TestPruneQuietRunsWaitsForABatch(t *testing.T) {
+	s, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	old := now.Add(-QuietRunMaxAge - time.Hour)
+	var runs []Run
+	for i := range quietPruneSlack {
+		runs = append(runs, Run{RunID: fmt.Sprintf("q-%02d", i), TaskID: "watch", StartedAt: old, FinishedAt: &old, Status: StatusSuccess, Quiet: true})
+	}
+	writeHistory(t, s, runs...)
+	if err := s.PruneQuietRuns(now); err != nil {
+		t.Fatal(err)
+	}
+	if got := len(runIDs(t, s)); got != quietPruneSlack {
+		t.Fatalf("%d expired runs are not yet a batch: want them kept, got %d", quietPruneSlack, got)
+	}
+	appendRun(t, s, Run{RunID: "q-last", TaskID: "watch", StartedAt: old, FinishedAt: &old, Status: StatusSuccess, Quiet: true})
+	if err := s.PruneQuietRuns(now); err != nil {
+		t.Fatal(err)
+	}
+	if got := runIDs(t, s); len(got) != 0 {
+		t.Fatalf("one more makes a batch and all expired go: %v", got)
 	}
 }

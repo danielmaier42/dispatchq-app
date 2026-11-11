@@ -21,15 +21,29 @@ const (
 	// the newest ones. It is what bounds a task that ticks more often than
 	// every fifteen minutes within QuietRunMaxAge.
 	QuietRunsPerTask = 200
+	// quietPruneSlack is how many hidden runs may be due for pruning before
+	// history is rewritten: once a watcher is past its retention, every tick
+	// would otherwise rewrite the whole file to drop one run.
+	quietPruneSlack = 20
 )
 
 // PruneQuietRuns drops the quiet runs older than QuietRunMaxAge at now and,
 // per task, all but the newest QuietRunsPerTask, deleting their logs with
-// them. Every other run is left exactly as it is; history.jsonl is rewritten
-// only when something is dropped.
+// them. Every other run is left exactly as it is. History is rewritten only
+// once more than quietPruneSlack runs are due, so a due run can outlive its
+// retention by that many ticks. The rewrite holds the cross-process write
+// lock, so a run another process appends meanwhile is not lost.
 func (s *Store) PruneQuietRuns(now time.Time) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	return s.withWriteLock(func() error {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.pruneQuietRunsLocked(now)
+	})
+}
+
+// pruneQuietRunsLocked is PruneQuietRuns for a caller holding the write lock
+// and s.mu.
+func (s *Store) pruneQuietRunsLocked(now time.Time) error {
 
 	latest, order, err := s.readHistoryLocked()
 	if err != nil || len(order) == 0 {
@@ -53,7 +67,7 @@ func (s *Store) PruneQuietRuns(now time.Time) error {
 			dropped[r.RunID] = true
 		}
 	}
-	if len(dropped) == 0 {
+	if len(dropped) <= quietPruneSlack {
 		return nil
 	}
 

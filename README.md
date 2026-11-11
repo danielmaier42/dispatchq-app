@@ -2235,7 +2235,13 @@ for example `notification "DispatchQ ✗ nightly failed" accepted by pushover
 (receipt 5042853c-…)`. A channel that does not take it (no network, a timeout,
 a server error, a rate limit) is tried again after 30 seconds, then with
 doubling pauses up to 5 minutes, and at once after the Mac wakes or the
-network is back, also across a daemon restart. Pushover, ntfy and the webhook
+network is back, also across a daemon restart. For two minutes after a wake
+every check tries again, and a try that fails on the network then does not
+lengthen the pause, since Wi-Fi often comes up a little after the Mac. While
+`config.toml` cannot be read, a notification goes to the desktop and is
+queued for the remote channels that were on before. An error names the
+service's host, never the full URL (for a Slack or Discord webhook the URL is
+the secret). Pushover, ntfy and the webhook
 are tried for 24 hours, the macOS banner for 1 hour; past that the daemon
 writes `NOTIFICATION LOST: …` to `dispatchqd.err.log`. A refusal that would
 repeat (a revoked token, a deleted topic: an HTTP 4xx other than 408 or 429)

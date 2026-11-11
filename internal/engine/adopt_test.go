@@ -143,6 +143,10 @@ func daemonDies(t *testing.T) (*Engine, *store.Store, *fakeProcs, *stub) {
 // four seconds later. It must take the run back instead.
 func TestRecoverTakesBackRunThatOutlivedTheDaemon(t *testing.T) {
 	e, st, procs, second := daemonDies(t)
+	// Its transcript exists but cannot say how the turn ended.
+	e.SetSessionReader(func(rec store.Run) (provider.Result, bool) {
+		return provider.Result{SessionID: rec.SessionID, SessionConfirmed: true}, false
+	})
 
 	adopted, interrupted, err := e.Recover()
 	if err != nil {

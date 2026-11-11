@@ -1362,12 +1362,17 @@ func (e *Engine) end(t task.Task, providerID string, rec store.Run, res provider
 	}
 	e.mu.Unlock()
 	e.awake.release()
-	e.clearLive(rec.RunID)
 
 	// A run that failed because the daemon stopped it on its way down (the
 	// shutdown grace ran out) was cut off by DispatchQ, not by its own work.
 	interrupted := runErr == nil && !wasCanceled && res.Status == store.StatusFailed && (cutOff || e.runCtx.Err() != nil)
-	e.conclude(t, providerID, rec, res, runErr, outcome{canceled: wasCanceled, takeover: takeover, interrupted: interrupted})
+	// The process record goes only once the outcome is written or kept: for a
+	// quiet-history run it is the only trace, and a daemon killed in between,
+	// or a history that took nothing, must leave the run for the next start
+	// to record (see Recover).
+	if e.conclude(t, providerID, rec, res, runErr, outcome{canceled: wasCanceled, takeover: takeover, interrupted: interrupted}) {
+		e.clearLive(rec.RunID)
+	}
 }
 
 // outcome is what finish knows about how a run ended beyond its result.
@@ -1389,7 +1394,10 @@ type outcome struct {
 // conclude records how a run ended, updates its task's scheduling state and
 // sends the notification. The run holds no slot any more: finish has given it
 // back, or the run was never this daemon's (see Recover).
-func (e *Engine) conclude(t task.Task, providerID string, rec store.Run, res provider.Result, runErr error, how outcome) {
+//
+// It reports whether the outcome reached history or was kept for it (see
+// store.ErrRunKept): only then may the run's process record go.
+func (e *Engine) conclude(t task.Task, providerID string, rec store.Run, res provider.Result, runErr error, how outcome) (recorded bool) {
 	wasCanceled, takeover := how.canceled, how.takeover
 	finished := e.clock.Now()
 	if !res.EndedAt.IsZero() && res.EndedAt.Before(finished) {
@@ -1469,7 +1477,7 @@ func (e *Engine) conclude(t task.Task, providerID string, rec store.Run, res pro
 			return nil
 		})
 	default:
-		if how.interrupted && e.resumeAfterInterrupt(t, rec, providerID) {
+		if how.interrupted && e.resumeAfterInterrupt(t, rec, providerID, res.SessionConfirmed) {
 			rec.Error += "; " + resumeAfterInterruptNote
 		} else {
 			e.retire(t.ID, oneShotTrigger(t.Trigger))
@@ -1489,8 +1497,10 @@ func (e *Engine) conclude(t task.Task, providerID string, rec store.Run, res pro
 	// the default Log and never unread (see store.Run.Quiet). Only a success
 	// is; every other outcome is recorded like any other run's.
 	rec.Quiet = quietSuccess(t, rec.Status)
+	recorded = true
 	if err := e.store.AppendRun(rec); err != nil {
 		fmt.Fprintf(os.Stderr, "dispatchqd: run %s: record outcome %s: %v\n", rec.RunID, rec.Status, err)
+		recorded = errors.Is(err, store.ErrRunKept)
 	}
 
 	// Bound disk usage: drop expired quiet runs first, then prune old
@@ -1525,6 +1535,7 @@ func (e *Engine) conclude(t task.Task, providerID string, rec store.Run, res pro
 
 	// Notify outside any lock so channel I/O never blocks other finishing runs.
 	e.notifyOutcome(t, rec, res.FinalOutput)
+	return recorded
 }
 
 // resumeAfterInterruptNote is added to the reason of a run whose session
@@ -1538,9 +1549,15 @@ const resumeAfterInterruptNote = "DispatchQ continues its session once when it r
 // own record of what it did, which is what a rate-limit pause does too. A
 // session that was already continuing after an interruption is not given a
 // third go: whatever keeps cutting it off is not going to stop, and the task
-// is retired like any other ended run. Recurring tasks, scripts and runs
-// without a session keep their old behaviour.
-func (e *Engine) resumeAfterInterrupt(t task.Task, rec store.Run, providerID string) bool {
+// is retired like any other ended run. Recurring tasks and scripts keep their
+// old behaviour.
+//
+// Only a session the harness knows can be continued: one it named on this
+// run (named), or the waiting session this run resumed. An id DispatchQ
+// assigned that the harness never took up (Codex picks its own; a harness
+// killed before it started has none) would resume nothing, so without one the
+// task is retired as before.
+func (e *Engine) resumeAfterInterrupt(t task.Task, rec store.Run, providerID string, named bool) bool {
 	if !oneShotTrigger(t.Trigger) || t.IsScript() || rec.SessionID == "" {
 		return false
 	}
@@ -1560,7 +1577,11 @@ func (e *Engine) resumeAfterInterrupt(t task.Task, rec store.Run, providerID str
 		if st.IsCompletedOnce(t.ID) && st.IsRemovalOwed(t.ID) {
 			return nil
 		}
-		if p, ok := st.PendingResume(t.ID); ok && p.InterruptedRun != "" {
+		p, waiting := st.PendingResume(t.ID)
+		if !named && (!waiting || p.SessionID != rec.SessionID) {
+			return nil
+		}
+		if waiting && p.InterruptedRun != "" {
 			// The same run met again (its end was not recorded before the
 			// daemon stopped) is still the first interruption; any other run
 			// is the second.

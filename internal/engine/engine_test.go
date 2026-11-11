@@ -457,6 +457,9 @@ func TestGracefulShutdownLetsRunFinish(t *testing.T) {
 type ctxStub struct {
 	mu      sync.Mutex
 	started int
+	// unconfirmed reports the run cut off before the harness named its
+	// session.
+	unconfirmed bool
 }
 
 func (s *ctxStub) Run(ctx context.Context, req executor.Request) (provider.Result, error) {
@@ -465,7 +468,7 @@ func (s *ctxStub) Run(ctx context.Context, req executor.Request) (provider.Resul
 	s.mu.Unlock()
 	<-ctx.Done()
 	return provider.Result{
-		Status: store.StatusFailed, SessionID: req.SessionID, ExitCode: -1,
+		Status: store.StatusFailed, SessionID: req.SessionID, SessionConfirmed: !s.unconfirmed, ExitCode: -1,
 		Message: "run was interrupted before completing (the process was terminated — e.g. the daemon stopped)",
 	}, nil
 }

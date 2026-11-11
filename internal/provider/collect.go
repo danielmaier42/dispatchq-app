@@ -15,6 +15,7 @@ type Collector struct {
 	name string
 
 	sessionID   string
+	confirmed   bool // the harness named the session itself
 	model       string
 	finalOutput string
 	metrics     *Metrics
@@ -45,6 +46,7 @@ func (c *Collector) Add(ev Event) {
 	case EventSessionStarted:
 		if ev.SessionID != "" {
 			c.sessionID = ev.SessionID
+			c.confirmed = true
 		}
 		// The first model named is the run's own; a later one would belong to
 		// something the run started.
@@ -120,13 +122,14 @@ func (c *Collector) CompletedRateLimit() bool {
 // harness merely reported an approaching limit.
 func (c *Collector) Result(exitCode int) Result {
 	res := Result{
-		SessionID:   c.sessionID,
-		Model:       c.model,
-		ExitCode:    exitCode,
-		RetryAfter:  c.retryAfter,
-		ResetAt:     c.resetAt,
-		FinalOutput: c.finalOutput,
-		Metrics:     c.metrics,
+		SessionID:        c.sessionID,
+		SessionConfirmed: c.confirmed,
+		Model:            c.model,
+		ExitCode:         exitCode,
+		RetryAfter:       c.retryAfter,
+		ResetAt:          c.resetAt,
+		FinalOutput:      c.finalOutput,
+		Metrics:          c.metrics,
 	}
 	switch {
 	case c.authFailed:

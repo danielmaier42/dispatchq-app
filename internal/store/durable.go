@@ -60,38 +60,39 @@ func transient(err error) bool {
 	return errors.As(err, &pathErr) || errors.As(err, &linkErr) || errors.As(err, &sysErr)
 }
 
-// appendRun is AppendRun's work: it queues r (only on the first attempt) and
-// writes everything waiting.
+// flushPending is one attempt of AppendRun: it writes everything waiting.
 // The cross-process lock keeps the append out of another process's rewrite of
 // history (PruneHistory, PruneQuietRuns), which would otherwise replace the
 // file with a copy that lacks it, and lets a failed write cut back only its
 // own bytes.
-func (s *Store) appendRun(r Run, first bool) error {
+func (s *Store) flushPending() error {
 	return s.withWriteLock(func() error {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		if first {
-			s.queueLocked(r)
-		}
 		return s.flushLocked()
 	})
 }
 
 // keepRun writes the fallback file of every record still waiting, after the
 // attempts to write history ran out. It returns whether r is still waiting
-// (another write may have taken it meanwhile) and the error keeping it.
-func (s *Store) keepRun(r Run) (bool, error) {
+// (another write may have taken it meanwhile), whether r's own record is kept,
+// and the error keeping any of them.
+func (s *Store) keepRun(r Run) (waiting, kept bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	waiting := false
 	for _, p := range s.pending {
 		waiting = waiting || p.RunID == r.RunID
 	}
 	if !waiting {
-		return false, nil
+		return false, false, nil
 	}
-	return true, s.markLocked()
+	err = s.markLocked()
+	return true, s.marked[r.RunID], err
 }
+
+// SetRetrySleep replaces how the store waits between the attempts of a failed
+// write. It is for tests, which must not spend wall-clock time on retries.
+func (s *Store) SetRetrySleep(f func(time.Duration)) { s.sleep = f }
 
 // pendingPath is the fallback file of a run record history did not take.
 func (s *Store) pendingPath(runID string) string {

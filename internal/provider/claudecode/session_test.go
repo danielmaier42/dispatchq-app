@@ -87,6 +87,10 @@ func TestSessionOutcome(t *testing.T) {
 			if ok != tc.ok {
 				t.Fatalf("ok = %v, want %v (result %+v)", ok, tc.ok, res)
 			}
+			// A transcript on disk names the session, whatever its turn says.
+			if want := tc.lines != nil; res.SessionConfirmed != want {
+				t.Fatalf("session confirmed = %v, want %v", res.SessionConfirmed, want)
+			}
 			if !ok {
 				return
 			}
@@ -132,5 +136,21 @@ func TestReadSessionOutcomeFindsTheInstance(t *testing.T) {
 	rec.Provider = store.RunProvider{Kind: store.ScriptRunKind}
 	if _, ok, _ := provider.ReadSessionOutcome(reg, set, rec); ok {
 		t.Fatal("a script run has no session to read")
+	}
+}
+
+// A transcript that exists but cannot be read just now (a system out of file
+// handles) still names the session, so a cut-off run can continue it.
+func TestSessionOutcomeOfAnUnreadableTranscript(t *testing.T) {
+	dir := t.TempDir()
+	writeTranscript(t, dir, "s1", tPrompt, tToolUse)
+	path := filepath.Join(dir, "projects", "-Users-dm-Documents-Projekte-NextGen", "s1.jsonl")
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	inst := provider.Instance{ID: "claude-1", Kind: provider.KindClaudeCode, ConfigDir: dir}
+	res, ok, err := New().SessionOutcome(inst, "s1", time.Time{})
+	if err == nil || ok || !res.SessionConfirmed || res.SessionID != "s1" {
+		t.Fatalf("SessionOutcome = %+v, %v, %v; want an error and the session confirmed", res, ok, err)
 	}
 }

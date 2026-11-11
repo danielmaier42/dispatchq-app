@@ -22,7 +22,10 @@ const (
 	tSidechain = `{"type":"assistant","isSidechain":true,"timestamp":"2026-11-10T09:00:02Z","message":{"id":"msg_3","model":"claude-haiku-4-5","stop_reason":"tool_use","content":[{"type":"tool_use","name":"Read"}]}}`
 	tBookkeep  = `{"type":"last-prompt","lastPrompt":"relock storefront","sessionId":"s1"}`
 	tReminder  = `{"type":"user","isSidechain":false,"isMeta":true,"timestamp":"2026-11-10T09:00:03Z","message":{"role":"user","content":[{"type":"text","text":"<system-reminder>a hook ran</system-reminder>"}]}}`
-	tAPIError  = `{"type":"assistant","isSidechain":false,"isApiErrorMessage":true,"timestamp":"2026-11-10T09:00:01Z","message":{"id":"e1","model":"<synthetic>","stop_reason":"stop_sequence","content":[{"type":"text","text":"API Error: 500 Internal server error"}]}}`
+	// A real limit line, as Claude Code wrote it on 2026-11-09.
+	tLimit    = `{"type":"assistant","isSidechain":false,"isApiErrorMessage":true,"timestamp":"2026-11-10T09:00:01Z","error":"rate_limit","apiError":"usage_limit_reached","apiErrorStatus":429,"apiErrorParams":{"rate_limit_info":{"status":"rejected","resetsAt":1794222000,"rateLimitType":"five_hour"}},"quotaLimits":{"status":"rejected","resetsAt":1794222000},"message":{"id":"e2","model":"<synthetic>","stop_reason":"stop_sequence","content":[{"type":"text","text":"You've hit your 5-hour limit · resets 12pm (Europe/Berlin)"}]}}`
+	tAuth     = `{"type":"assistant","isSidechain":false,"isApiErrorMessage":true,"timestamp":"2026-11-10T09:00:01Z","error":"authentication_failed","apiErrorStatus":401,"message":{"id":"e3","model":"<synthetic>","stop_reason":"stop_sequence","content":[{"type":"text","text":"Invalid API key · Please run /login"}]}}`
+	tAPIError = `{"type":"assistant","isSidechain":false,"isApiErrorMessage":true,"timestamp":"2026-11-10T09:00:01Z","message":{"id":"e1","model":"<synthetic>","stop_reason":"stop_sequence","content":[{"type":"text","text":"API Error: 500 Internal server error"}]}}`
 )
 
 func writeTranscript(t *testing.T, dir, session string, lines ...string) {
@@ -57,6 +60,12 @@ func TestSessionOutcome(t *testing.T) {
 		{name: "api error", lines: []string{tPrompt, tAPIError}, since: started,
 			ok: true, status: store.StatusFailed, output: "API Error: 500 Internal server error",
 			message: "API Error: 500 Internal server error"},
+		{name: "rate limit", lines: []string{tPrompt, tLimit}, since: started,
+			ok: true, status: store.StatusRateLimited, output: "You've hit your 5-hour limit · resets 12pm (Europe/Berlin)",
+			message: "rate limit hit; waiting for reset"},
+		{name: "login problem", lines: []string{tPrompt, tAuth}, since: started,
+			ok: true, status: store.StatusAuthError, output: "Invalid API key · Please run /login",
+			message: "Invalid API key · Please run /login"},
 		{name: "answer belongs to an earlier run", lines: []string{tPrompt, tThinking, tAnswer},
 			since: time.Date(2026, 11, 10, 10, 0, 0, 0, time.UTC)},
 		{name: "no transcript", since: started},
@@ -82,6 +91,9 @@ func TestSessionOutcome(t *testing.T) {
 			}
 			if want := time.Date(2026, 11, 10, 9, 0, 1, 0, time.UTC); !res.EndedAt.Equal(want) {
 				t.Fatalf("ended at %v, want the answer's time %v", res.EndedAt, want)
+			}
+			if tc.status == store.StatusRateLimited && !res.ResetAt.Equal(time.Unix(1794222000, 0)) {
+				t.Fatalf("reset at %v, want the window the limit line names", res.ResetAt)
 			}
 			if res.SessionID != "s1" {
 				t.Fatalf("session = %q", res.SessionID)

@@ -912,7 +912,7 @@ func (e *Engine) runningState() schedule.Running {
 // persisted the RecordStart. sessionID/resume come from the caller's snapshot,
 // notes are the remarks that go into the run's log before the harness starts
 // writing (see runNotes).
-func (e *Engine) launchTask(t task.Task, settings store.Settings, resolved provider.Resolved, deps []workflow.Dependency, sessionID string, resume bool, notes []string, started time.Time) error {
+func (e *Engine) launchTask(t task.Task, settings store.Settings, resolved provider.Resolved, deps []workflow.Dependency, sessionID string, resume resumeMode, notes []string, started time.Time) error {
 	runID := e.newRunID()
 
 	logFile, err := os.Create(e.store.LogPath(runID))
@@ -988,6 +988,14 @@ func (e *Engine) launchTask(t task.Task, settings store.Settings, resolved provi
 			prompted.Prompt = workflow.Context(deps) + "\n" + t.Prompt
 		}
 	}
+	// A session DispatchQ cut off may have finished its work before the cut,
+	// or done half of it; its original prompt is already in the session.
+	// Sending it again would ask for the whole job a second time, so the
+	// continuation asks for what is missing instead.
+	if resume == continueInterrupted && !t.IsScript() {
+		prompted.Prompt = interruptedContinuationPrompt
+		writeNote(logFile, "Continuing the session DispatchQ cut off; the model is asked to finish only what is missing.")
+	}
 
 	req := executor.Request{
 		Task:               prompted,
@@ -997,7 +1005,7 @@ func (e *Engine) launchTask(t task.Task, settings store.Settings, resolved provi
 		InheritProvider:    inheritedProvider(resolved),
 		RunID:              runID,
 		SessionID:          sessionID,
-		Resume:             resume,
+		Resume:             resume != startFresh,
 		Model:              resolved.Model,
 		AccessMode:         accessMode(t.Permissions),
 		ReasoningEffort:    t.ReasoningEffort,
@@ -1232,6 +1240,28 @@ func writeNote(log io.Writer, message string) {
 	_, _ = log.Write(append(line, '\n'))
 }
 
+// resumeMode is how a run starts its session.
+type resumeMode int
+
+const (
+	// startFresh starts a new session.
+	startFresh resumeMode = iota
+	// resumeSession continues a session a rate limit paused, with the task's
+	// prompt.
+	resumeSession
+	// continueInterrupted continues a session DispatchQ cut off, with
+	// interruptedContinuationPrompt instead of the task's prompt.
+	continueInterrupted
+)
+
+// interruptedContinuationPrompt is what a session DispatchQ cut off is
+// continued with.
+const interruptedContinuationPrompt = "DispatchQ stopped this session before it reported a result " +
+	"(the daemon restarted or shut down), so your last steps may not have completed. " +
+	"Check what of the task above is already done (files, commits, pushes, posted comments, " +
+	"anything you already sent), do not repeat it, finish only what is still missing, " +
+	"and then give your final answer."
+
 // sessionFor returns the session to use, whether it is a resume, and — when a
 // waiting session had to be abandoned — why.
 //
@@ -1245,22 +1275,25 @@ func writeNote(log io.Writer, message string) {
 // with it: the work has been done from the start on the other account, and
 // running it a second time when the first provider's window reopens would be
 // worse than losing the conversation.
-func (e *Engine) sessionFor(t task.Task, st *store.State, providerID string) (sessionID string, resume bool, dropped string) {
+func (e *Engine) sessionFor(t task.Task, st *store.State, providerID string) (sessionID string, resume resumeMode, dropped string) {
 	// A script keeps no conversation: there is no session to hand it and none it
 	// could ever be waiting to resume.
 	if t.IsScript() {
-		return "", false, ""
+		return "", startFresh, ""
 	}
 	pending, ok := st.PendingResume(t.ID)
 	switch {
 	case !ok:
-		return e.newSessionID(), false, ""
+		return e.newSessionID(), startFresh, ""
 	case pending.ProviderID == "" || pending.ProviderID == providerID:
 		// No provider recorded means it was written before sessions carried one,
 		// when there was only the one provider to have issued it.
-		return pending.SessionID, true, ""
+		if pending.AfterInterrupt {
+			return pending.SessionID, continueInterrupted, ""
+		}
+		return pending.SessionID, resumeSession, ""
 	}
-	return e.newSessionID(), false, fmt.Sprintf(
+	return e.newSessionID(), startFresh, fmt.Sprintf(
 		"the interrupted session belongs to provider %q and this task now runs on %q, so it starts fresh",
 		pending.ProviderID, providerID)
 }
@@ -1402,7 +1435,7 @@ func (e *Engine) conclude(t task.Task, providerID string, rec store.Run, res pro
 			return nil
 		})
 	default:
-		if how.interrupted && e.resumeAfterInterrupt(t, rec.SessionID, providerID) {
+		if how.interrupted && e.resumeAfterInterrupt(t, rec, providerID) {
 			rec.Error += "; " + resumeAfterInterruptNote
 		} else {
 			e.retire(t.ID, oneShotTrigger(t.Trigger))
@@ -1472,16 +1505,28 @@ const resumeAfterInterruptNote = "DispatchQ continues its session once when it r
 // third go: whatever keeps cutting it off is not going to stop, and the task
 // is retired like any other ended run. Recurring tasks, scripts and runs
 // without a session keep their old behaviour.
-func (e *Engine) resumeAfterInterrupt(t task.Task, sessionID, providerID string) bool {
-	if !oneShotTrigger(t.Trigger) || t.IsScript() || sessionID == "" {
+func (e *Engine) resumeAfterInterrupt(t task.Task, rec store.Run, providerID string) bool {
+	if !oneShotTrigger(t.Trigger) || t.IsScript() || rec.SessionID == "" {
+		return false
+	}
+	// A task taken out of the queue meanwhile has nothing to continue.
+	cfg, err := e.store.LoadConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dispatchqd: task %s: plan to continue its interrupted session: %v\n", t.ID, err)
+		return false
+	}
+	if !slices.ContainsFunc(cfg.Tasks, func(q task.Task) bool { return q.ID == t.ID }) {
 		return false
 	}
 	resumed := false
-	err := e.store.UpdateState(func(st *store.State) error {
+	err = e.store.UpdateState(func(st *store.State) error {
 		if p, ok := st.PendingResume(t.ID); ok && p.AfterInterrupt {
+			// The same run met again (its end was not recorded before the
+			// daemon stopped) is still the first interruption.
+			resumed = p.InterruptedRun == rec.RunID
 			return nil
 		}
-		st.SetInterruptedResume(t.ID, sessionID, providerID)
+		st.SetInterruptedResume(t.ID, rec.SessionID, providerID, rec.RunID)
 		st.ClearCompletedOnce(t.ID)
 		resumed = true
 		return nil

@@ -211,6 +211,10 @@ type PendingResume struct {
 	// cut its run off (a shutdown, a daemon that died), not because of a limit.
 	// Such a session gets one more go: interrupted again, the task is retired.
 	AfterInterrupt bool `json:"after_interrupt,omitempty"`
+	// InterruptedRun is the run whose interruption planned this continuation,
+	// so the same run met again (a daemon that died before recording it)
+	// does not count as a second interruption.
+	InterruptedRun string `json:"interrupted_run,omitempty"`
 }
 
 // UnmarshalJSON accepts the shape written before the provider travelled with
@@ -358,14 +362,24 @@ func (s *State) PendingResume(taskID string) (PendingResume, bool) {
 
 // SetPendingResume records that a task should continue the given session on the
 // provider that issued it.
+//
+// A session already continuing after an interruption keeps that mark when a
+// limit pauses it: it was given its one more go, and a pause on the way does
+// not give it another.
 func (s *State) SetPendingResume(taskID, sessionID, providerID string) {
-	s.PendingResumes[taskID] = PendingResume{SessionID: sessionID, ProviderID: providerID}
+	next := PendingResume{SessionID: sessionID, ProviderID: providerID}
+	if prev, ok := s.PendingResumes[taskID]; ok && prev.AfterInterrupt && prev.SessionID == sessionID {
+		next.AfterInterrupt, next.InterruptedRun = true, prev.InterruptedRun
+	}
+	s.PendingResumes[taskID] = next
 }
 
 // SetInterruptedResume records that a task should continue the session a
 // DispatchQ shutdown or crash cut off (see PendingResume.AfterInterrupt).
-func (s *State) SetInterruptedResume(taskID, sessionID, providerID string) {
-	s.PendingResumes[taskID] = PendingResume{SessionID: sessionID, ProviderID: providerID, AfterInterrupt: true}
+func (s *State) SetInterruptedResume(taskID, sessionID, providerID, runID string) {
+	s.PendingResumes[taskID] = PendingResume{
+		SessionID: sessionID, ProviderID: providerID, AfterInterrupt: true, InterruptedRun: runID,
+	}
 }
 
 // ClearPendingResume clears any pending resume for a task.

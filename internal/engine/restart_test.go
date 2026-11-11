@@ -101,10 +101,13 @@ func TestRecoverContinuesAnInterruptedOneShotOnce(t *testing.T) {
 	if len(reqs) != 1 || !reqs[0].Resume || reqs[0].SessionID != "sess-1" {
 		t.Fatalf("runs after the restart = %+v, want one that continues session sess-1", reqs)
 	}
+	if reqs[0].Task.Prompt != interruptedContinuationPrompt {
+		t.Fatalf("continuation prompt = %q, want the one asking for what is missing, not the whole task again", reqs[0].Task.Prompt)
+	}
 
 	// The continuation is cut off as well: the task is given up on.
 	if err := st.UpdateState(func(s *store.State) error {
-		s.SetInterruptedResume("relock", "sess-1", "claude")
+		s.SetInterruptedResume("relock", "sess-1", "claude", "run-0")
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -216,5 +219,38 @@ func TestRecoverRecordsTheRealOutcomeOfARunThatEndedUnwatched(t *testing.T) {
 	e.WaitIdle()
 	if n := len(second.requests()); n != 0 {
 		t.Fatalf("the finished one-shot ran again (%d runs)", n)
+	}
+}
+
+// The review finding: a daemon that died after planning the continuation but
+// before recording the run met the same run again at the next start, and
+// counted it as a second interruption.
+func TestTheSameInterruptedRunIsNotCountedTwice(t *testing.T) {
+	e, st, _ := diedUnder(t, asapTask("relock", false))
+	if _, _, err := e.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	run := latestRun(t, st, "run-1")
+	run.Status, run.Error, run.FinishedAt = store.StatusRunning, "", nil
+	e.conclude(asapTask("relock", false), "claude", run,
+		provider.Result{Status: store.StatusFailed, SessionID: "sess-1", Message: store.InterruptedError},
+		nil, outcome{interrupted: true})
+	s, _ := st.LoadState()
+	if p, ok := s.PendingResume("relock"); !ok || !p.AfterInterrupt || s.IsCompletedOnce("relock") {
+		t.Fatalf("pending = %+v, %v; the same run met twice retired the task", p, ok)
+	}
+}
+
+// The review finding: a task taken out of the queue while its run was cut off
+// had a continuation planned for it anyway.
+func TestNoContinuationForATaskNoLongerQueued(t *testing.T) {
+	e, st, _ := diedUnder(t, asapTask("relock", false))
+	saveTasks(t, st) // the task was deleted meanwhile
+	if _, _, err := e.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	s, _ := st.LoadState()
+	if _, ok := s.PendingResume("relock"); ok {
+		t.Fatal("a continuation was planned for a task that is no longer queued")
 	}
 }

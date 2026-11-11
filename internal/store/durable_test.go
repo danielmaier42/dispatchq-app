@@ -296,3 +296,18 @@ func TestRetireTaskRecordsAnOwedRemoval(t *testing.T) {
 		t.Fatal("the failed removal is not recorded as owed")
 	}
 }
+
+// The review finding: a limit on the continuation replaced its mark, so the
+// "once" could repeat. A pause of the same session keeps it.
+func TestALimitKeepsTheContinuationMark(t *testing.T) {
+	st := newState()
+	st.SetInterruptedResume("a", "sess", "claude", "run-1")
+	st.SetPendingResume("a", "sess", "claude")
+	if p, _ := st.PendingResume("a"); !p.AfterInterrupt || p.InterruptedRun != "run-1" {
+		t.Fatalf("pending after a limit = %+v, want the continuation mark kept", p)
+	}
+	st.SetPendingResume("a", "other", "claude")
+	if p, _ := st.PendingResume("a"); p.AfterInterrupt {
+		t.Fatal("a different session inherited the mark")
+	}
+}

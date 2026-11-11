@@ -26,7 +26,15 @@ type transcriptLine struct {
 	IsMeta            bool      `json:"isMeta"`
 	IsAPIErrorMessage bool      `json:"isApiErrorMessage"`
 	Timestamp         time.Time `json:"timestamp"`
-	Message           struct {
+	// An API error line names the error the way the stream does, plus the
+	// rate-limit window when it was a limit.
+	Error          string `json:"error"`
+	APIErrorStatus *int   `json:"apiErrorStatus"`
+	APIErrorParams struct {
+		RateLimitInfo *rateLimitInfo `json:"rate_limit_info"`
+	} `json:"apiErrorParams"`
+	QuotaLimits *rateLimitInfo `json:"quotaLimits"`
+	Message     struct {
 		ID         string          `json:"id"`
 		Model      string          `json:"model"`
 		StopReason string          `json:"stop_reason"`
@@ -91,7 +99,19 @@ func (a *Adapter) SessionOutcome(inst provider.Instance, sessionID string, since
 	}
 	switch {
 	case last.IsAPIErrorMessage:
-		c.Add(provider.Event{Type: provider.EventCompleted, IsError: true, FinalOutput: answer})
+		// The turn ended on an error the API returned. It is classified by
+		// the parser that reads a live run, as the error result the stream
+		// would have ended with: a limit pauses the provider until its window
+		// reopens, a login problem is one, an organisation or billing block
+		// pauses the account.
+		limit := last.APIErrorParams.RateLimitInfo
+		if limit == nil {
+			limit = last.QuotaLimits
+		}
+		c.AddAll((&parser{}).events(streamEvent{
+			Type: "result", IsError: true, ResultText: answer,
+			Error: last.Error, APIErrorStatus: last.APIErrorStatus, RateLimitInfo: limit,
+		}))
 		c.Add(provider.Event{Type: provider.EventFailed, Detail: answer})
 	case last.Message.StopReason == "end_turn" || last.Message.StopReason == "stop_sequence":
 		c.Add(provider.Event{Type: provider.EventCompleted, FinalOutput: answer})

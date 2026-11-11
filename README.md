@@ -452,7 +452,10 @@ explains it.
   ended while no daemon watched it (a crash, a power loss, an update that
   killed the daemon) gets its outcome at the next start: the one its session
   transcript shows when the turn had ended (Claude Code), otherwise *failed*
-  as interrupted. This holds for quiet-history runs too, which otherwise
+  as interrupted. A turn that ended on an API error is read the way a live
+  run's is: a usage limit pauses the provider until the window the error
+  names and the session resumes then, a login problem is recorded as
+  `auth_error`, any other error as *failed*. This holds for quiet-history runs too, which otherwise
   leave no trace. It is notified like any other failure, and the daemon log
   names each run (`run … ended while no daemon watched it`).
 - **An interrupted one-shot continues once.** When DispatchQ itself cuts off a
@@ -460,7 +463,11 @@ explains it.
   under it, or a run taken back after a restart ends without a readable
   outcome), the task is not retired half done and not started over:
   its next run continues the same session, so the model sees what it already
-  did. The run's reason says so. Cut off a second time, the task is retired.
+  did. It is not handed the task's prompt again but told that it was cut off,
+  to check what is already done and finish only what is missing. The run's
+  reason says so, and so does a note in the next run's log. Cut off a second
+  time, even after a limit paused the continuation, the task is retired. A
+  task deleted meanwhile is not continued.
   Recurring tasks start their next occurrence fresh as before, and scripts
   are not continued.
 - **Runs survive a daemon restart.** A run's process does not stop when the

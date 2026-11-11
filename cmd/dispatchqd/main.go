@@ -222,7 +222,9 @@ func cmdRun(args []string) error {
 	if plat.sleep != nil {
 		eng.SetSleepInhibitor(plat.sleep)
 	}
-	eng.SetNotifier(&liveNotifier{st: st, desktop: plat.desktop})
+	notifier := &liveNotifier{st: st, desktop: plat.desktop}
+	notifier.settings() // read once now, so a send that cannot read them has settings to fall back on
+	eng.SetNotifier(notifier)
 	// A run's process can outlive the daemon that started it (an update that
 	// kills the old daemon, a crash). Take back every run still going before
 	// the first tick, so it shows as running and its task does not start a

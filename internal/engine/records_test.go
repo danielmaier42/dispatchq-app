@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -36,8 +37,12 @@ func TestRecoverRemovesACompletedOneShotStillQueued(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.Tasks) != 1 || cfg.Tasks[0].ID != "next" {
-		t.Fatalf("queue after the start = %+v, want only the task that has not run", cfg.Tasks)
+	var queued []string
+	for _, tk := range cfg.Tasks {
+		queued = append(queued, tk.ID)
+	}
+	if !slices.Equal(queued, []string{"next"}) {
+		t.Fatalf("queue after the start = %v, want only the task that has not run", queued)
 	}
 	if err := e.Tick(context.Background()); err != nil {
 		t.Fatal(err)

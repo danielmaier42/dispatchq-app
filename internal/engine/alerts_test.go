@@ -246,7 +246,7 @@ func TestLongWaitIsAnnouncedOncePerWait(t *testing.T) {
 
 	msgs := n.all()
 	if len(msgs) != 1 || msgs[0].Kind != store.InboxKindWaiting || msgs[0].Title != "DispatchQ: second is waiting" ||
-		!strings.Contains(msgs[0].Message, "Due for 30m0s") {
+		!strings.Contains(msgs[0].Message, "Waiting for 30m0s") {
 		t.Fatalf("pushes = %+v, want one waiting notice", msgs)
 	}
 }
@@ -346,5 +346,87 @@ func TestScriptTaskDoesNotWaitForTheNetwork(t *testing.T) {
 	e.WaitIdle()
 	if called || len(r.requests()) != 1 {
 		t.Fatalf("script: network asked %v, runs %d", called, len(r.requests()))
+	}
+}
+
+// A reminder keeps the streak's one row in the Notifications view.
+func TestFailureReminderKeepsOneInboxRow(t *testing.T) {
+	fc := clock.NewFake(time.Date(2026, 11, 10, 8, 0, 0, 0, time.Local))
+	r := &outcomes{}
+	e, st := newTestEngine(t, r, fc)
+	e.SetNotifier(&capturingNotifier{})
+	saveTasks(t, st, watchTask())
+	r.push(store.StatusFailed, store.StatusFailed)
+	runNow(t, e, "watch")
+	fc.Advance(FailureReminderAfter)
+	runNow(t, e, "watch")
+	if entries := inbox(t, st); len(entries) != 1 || !strings.Contains(entries[0].Title, "(2 times)") {
+		t.Fatalf("inbox = %+v, want the one streak row", entries)
+	}
+}
+
+// A run that was under way when the limit hit and then finished proves
+// nothing about the pause: the chain keeps counting.
+func TestRunStartedBeforeThePauseDoesNotEndIt(t *testing.T) {
+	at := time.Date(2026, 11, 10, 9, 0, 0, 0, time.Local)
+	e, _ := newTestEngine(t, &stub{}, clock.NewFake(at))
+	n := &capturingNotifier{}
+	e.SetNotifier(n)
+	prov := store.RunProvider{ID: "claude", Name: "Claude"}
+	for i := range 10 {
+		started := at.Add(time.Duration(i) * 16 * time.Minute)
+		resume := started.Add(15 * time.Minute)
+		e.notePause(store.Run{RunID: "r", TaskName: "a", StartedAt: started, ResumeAt: &resume, Provider: prov}, started)
+		e.notifyOutcome(asapTask("b", true), store.Run{RunID: "p", TaskID: "b", Status: store.StatusFailed,
+			StartedAt: at.Add(-time.Minute), Provider: prov}, "")
+	}
+	pauses := 0
+	for _, m := range n.all() {
+		if m.Kind == store.InboxKindProvider {
+			pauses++
+		}
+	}
+	if pauses != 1 {
+		t.Fatalf("pause announcements = %d, want 1", pauses)
+	}
+}
+
+// Time held for a reason that is not announced does not count towards the
+// waiting notice once the reason changes.
+func TestExplainedWaitDoesNotCountTowardsTheNotice(t *testing.T) {
+	now := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
+	var h holds
+	log := &bytes.Buffer{}
+	explained := func(string) time.Duration { return 0 }
+	unexplained := func(string) time.Duration { return HoldNotifyAfter }
+	h.update(map[string]string{"a": "No network connection"}, now, log, explained)
+	now = now.Add(3 * time.Hour)
+	if long := h.update(map[string]string{"a": "runs alone"}, now, log, unexplained); len(long) != 0 {
+		t.Fatalf("announced at once after an explained wait: %+v", long)
+	}
+	now = now.Add(HoldNotifyAfter)
+	if long := h.update(map[string]string{"a": "runs alone"}, now, log, unexplained); len(long) != 1 || long[0].waited != HoldNotifyAfter {
+		t.Fatalf("long = %+v, want one notice counting 30 minutes", long)
+	}
+}
+
+func TestAPIHostFollowsTheInstanceEnvironment(t *testing.T) {
+	cases := []struct {
+		kind provider.Kind
+		env  map[string]string
+		want string
+	}{
+		{provider.KindClaudeCode, nil, "api.anthropic.com"},
+		{provider.KindCodex, nil, "api.openai.com"},
+		{provider.KindOpencode, nil, ""},
+		{provider.KindClaudeCode, map[string]string{"ANTHROPIC_BASE_URL": "https://llm.corp.example/anthropic"}, "llm.corp.example"},
+		{provider.KindClaudeCode, map[string]string{"ANTHROPIC_BASE_URL": "http://127.0.0.1:4000"}, ""},
+		{provider.KindClaudeCode, map[string]string{"CLAUDE_CODE_USE_BEDROCK": "1"}, ""},
+		{provider.KindCodex, map[string]string{"HTTPS_PROXY": "http://proxy:3128"}, ""},
+	}
+	for _, c := range cases {
+		if got := apiHost(provider.Instance{Kind: c.kind, Env: c.env}); got != c.want {
+			t.Errorf("%s %v: host = %q, want %q", c.kind, c.env, got, c.want)
+		}
 	}
 }

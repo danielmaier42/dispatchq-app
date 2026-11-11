@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/url"
+	"os"
 	"time"
 
 	"github.com/danielmaier42/claudeq/internal/provider"
@@ -16,12 +18,54 @@ import (
 // API's host name resolves; while it does not, the task stays due and waits
 // with the reason "no network", and starts on the first tick that has it.
 //
-// apiHosts is the host each harness needs. opencode is not checked: it is as
-// often pointed at a model on this machine or the local network as at a
-// cloud API, and holding it back offline would stop work that can run.
-var apiHosts = map[provider.Kind]string{
-	provider.KindClaudeCode: "api.anthropic.com",
-	provider.KindCodex:      "api.openai.com",
+// apiHost is the host a provider instance's harness needs, or nothing when
+// the daemon cannot tell, in which case the run is not held back: better a run
+// that fails than one that never starts. Claude Code talks to
+// api.anthropic.com and Codex to api.openai.com, unless the instance's (or
+// the daemon's) environment points them elsewhere: a base URL is checked
+// instead (a loopback or IP address needs no look-up), and Bedrock, Vertex or
+// a proxy are not checked. opencode is not checked: it is as often pointed at
+// a model on this machine or the local network as at a cloud API.
+func apiHost(inst provider.Instance) string {
+	env := func(key string) string {
+		if v := inst.Env[key]; v != "" {
+			return v
+		}
+		return os.Getenv(key)
+	}
+	for _, key := range []string{"HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"} {
+		if env(key) != "" {
+			return ""
+		}
+	}
+	switch inst.Kind {
+	case provider.KindClaudeCode:
+		if env("CLAUDE_CODE_USE_BEDROCK") != "" || env("CLAUDE_CODE_USE_VERTEX") != "" {
+			return ""
+		}
+		return hostOf(env("ANTHROPIC_BASE_URL"), "api.anthropic.com")
+	case provider.KindCodex:
+		return hostOf(env("OPENAI_BASE_URL"), "api.openai.com")
+	default:
+		return ""
+	}
+}
+
+// hostOf is the host name in a base URL, or fallback when there is none; a
+// URL that names no host, or names an address or localhost, needs no look-up.
+func hostOf(baseURL, fallback string) string {
+	if baseURL == "" {
+		return fallback
+	}
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return ""
+	}
+	h := u.Hostname()
+	if h == "" || h == "localhost" || net.ParseIP(h) != nil {
+		return ""
+	}
+	return h
 }
 
 // NetworkCheckTimeout bounds one look-up. Offline, the resolver answers at
@@ -48,7 +92,7 @@ type network map[string]error
 // reachable reports whether a resolved provider's API can be reached; a
 // harness without a known host always can.
 func (n network) reachable(r provider.Resolved) bool {
-	return n[apiHosts[r.Instance.Kind]] == nil
+	return n[apiHost(r.Instance)] == nil
 }
 
 // probeNetwork looks up the API host of every agent task about to start, once
@@ -64,7 +108,7 @@ func (e *Engine) probeNetwork(ctx context.Context, due []assignment) network {
 		if a.err != nil || a.task.IsScript() {
 			continue
 		}
-		host := apiHosts[a.resolved.Instance.Kind]
+		host := apiHost(a.resolved.Instance)
 		if _, done := out[host]; done || host == "" {
 			continue
 		}

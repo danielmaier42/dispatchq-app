@@ -1539,7 +1539,9 @@ func (e *Engine) Loop(ctx context.Context, interval time.Duration) error {
 		// A tick that comes much later than planned means the machine slept:
 		// whatever waits in the notification outbox is tried at once, since
 		// the network may just have come back with the wake.
-		now := e.clock.Now()
+		// The wall clock, not the monotonic one, which on macOS stands still
+		// while the machine sleeps and would hide the gap.
+		now := e.clock.Now().Round(0)
 		woke := !last.IsZero() && now.Sub(last) > 3*interval+WakeGap
 		last = now
 		e.sweepDeliveries(woke)

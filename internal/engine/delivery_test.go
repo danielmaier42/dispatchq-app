@@ -252,3 +252,30 @@ func TestRetryPauseGrowsToItsCap(t *testing.T) {
 		}
 	}
 }
+
+// Entries queued behind a failing one are not tried while it fails, so they
+// must expire on their own: once the desktop works again, a banner from hours
+// ago is not shown as new.
+func TestEntriesPastTheirWindowAreDroppedWithoutATry(t *testing.T) {
+	fc := clock.NewFake(time.Date(2026, 11, 9, 3, 15, 0, 0, time.UTC))
+	e, st, chans, _, errs := newDeliveryEngine(t, fc)
+	chans.noPhone = true
+	chans.desktop.fail(errors.New("osascript: exit status 1"))
+	e.send(notify.Notification{Title: "old"})
+	fc.Advance(time.Minute)
+	e.send(notify.Notification{Title: "older than the window by the time it is tried"})
+
+	chans.desktop.fail(nil)
+	fc.Advance(DesktopRetryWindow)
+	e.retryDeliveries(true)
+
+	for _, n := range chans.desktop.received()[2:] {
+		t.Fatalf("expired banner shown again: %q", n.Title)
+	}
+	if list := pending(t, st); len(list) != 0 {
+		t.Fatalf("outbox = %+v", list)
+	}
+	if got := strings.Count(errs.String(), "NOTIFICATION LOST"); got != 2 {
+		t.Fatalf("lost lines = %d, want 2:\n%s", got, errs.String())
+	}
+}

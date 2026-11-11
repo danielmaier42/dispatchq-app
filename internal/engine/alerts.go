@@ -72,7 +72,7 @@ func (e *Engine) notifyOutcome(t task.Task, rec store.Run, resultText string) {
 		return
 	}
 	if rec.Status != store.StatusCanceled {
-		e.endPause(rec.Provider.ID)
+		e.endPause(rec.Provider.ID, rec.StartedAt)
 	}
 	msg := truncateRunes(strings.TrimSpace(resultText), 300)
 	switch rec.Status {
@@ -139,9 +139,16 @@ func (e *Engine) notifyFailure(n notify.Notification, at time.Time) {
 		n.Title = fmt.Sprintf("DispatchQ ✗ %s failing since %s (%d times)", n.TaskName, reopenText(streak.Since, at), streak.Count)
 	}
 	var id string
-	if push {
+	switch {
+	case push && streak.Count == 1:
 		id = e.send(n)
-	} else {
+	case push:
+		// A reminder: the streak keeps its one row, and the channels get it
+		// once more.
+		id = e.refreshStreakEntry(streak, n, at)
+		n.ID = id
+		e.deliver(n, at)
+	default:
 		id = e.refreshStreakEntry(streak, n, at)
 	}
 	if id == "" || id == streak.InboxID {
@@ -186,6 +193,9 @@ func (e *Engine) refreshStreakEntry(streak store.FailingTask, n notify.Notificat
 // the task opted in to.
 func (e *Engine) notifySuccess(t task.Task, rec store.Run, msg string, at time.Time) {
 	var ended *store.FailingTask
+	// Read first and changed only when there is a streak: a success is the
+	// common case, and taking the store's cross-process write lock for every
+	// one of them would be for nothing.
 	if open, err := e.store.FailingTasks(); err != nil {
 		fmt.Fprintf(e.deliveryErrLog, "dispatchqd: read failure streaks: %v\n", err)
 	} else if slices.ContainsFunc(open, func(f store.FailingTask) bool { return f.TaskID == rec.TaskID }) {
@@ -263,11 +273,15 @@ func (e *Engine) notePause(rec store.Run, at time.Time) {
 	})
 }
 
-// endPause forgets a provider's pause: a run on it ended for another reason.
-func (e *Engine) endPause(providerID string) {
+// endPause forgets a provider's pause: a run on it that started after the
+// pause began ended for another reason, so the provider is working again. A
+// run that was already under way when the limit hit proves nothing.
+func (e *Engine) endPause(providerID string, started time.Time) {
 	e.alerts.mu.Lock()
-	delete(e.alerts.pauses, providerID)
-	e.alerts.mu.Unlock()
+	defer e.alerts.mu.Unlock()
+	if ep, ok := e.alerts.pauses[providerID]; ok && !started.Before(ep.since) {
+		delete(e.alerts.pauses, providerID)
+	}
 }
 
 // holdLimits says how long each task may wait before its wait is announced:
@@ -317,7 +331,7 @@ func (e *Engine) announceHolds(long []longHold, names map[string]string) {
 			e.send(notify.Notification{
 				Kind:     store.InboxKindWaiting,
 				Title:    "DispatchQ: " + name + " is waiting",
-				Message:  fmt.Sprintf("Due for %s and not started: %s", h.waited.Round(time.Minute), h.reason),
+				Message:  fmt.Sprintf("Waiting for %s: %s", h.waited.Round(time.Minute), h.reason),
 				TaskID:   h.taskID,
 				TaskName: name,
 			})

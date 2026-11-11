@@ -25,8 +25,11 @@ type holds struct {
 	// logged once, and again only when its reason changes.
 	logged map[string]string
 	// announced holds the tasks whose current wait was notified, so a wait is
-	// announced once however long it goes on.
+	// announced once however long it goes on. counting is since when each
+	// task has waited for a reason worth announcing: time held for one that is
+	// not (no network, out of allowance) does not count towards the limit.
 	announced map[string]bool
+	counting  map[string]time.Time
 }
 
 // longHold is a wait that has just gone on long enough to be announced.
@@ -50,6 +53,7 @@ func (h *holds) update(reasons map[string]string, now time.Time, log io.Writer, 
 	next := make(map[string]schedule.Hold, len(reasons))
 	logged := make(map[string]string, len(reasons))
 	announced := make(map[string]bool, len(h.announced))
+	counting := make(map[string]time.Time, len(h.counting))
 	var long []longHold
 	for id, reason := range reasons {
 		since := now
@@ -70,16 +74,25 @@ func (h *holds) update(reasons map[string]string, now time.Time, log io.Writer, 
 			announced[id] = true
 			continue
 		}
-		if limit == nil {
+		after := time.Duration(0)
+		if limit != nil {
+			after = limit(id)
+		}
+		if after <= 0 {
 			continue
 		}
-		if after := limit(id); after > 0 && waited >= after {
-			fmt.Fprintf(log, "dispatchqd: task %q has waited %s; notifying\n", id, waited.Round(time.Minute))
-			long = append(long, longHold{taskID: id, reason: reason, waited: waited})
+		from, ok := h.counting[id]
+		if !ok {
+			from = now
+		}
+		counting[id] = from
+		if counted := now.Sub(from); counted >= after {
+			fmt.Fprintf(log, "dispatchqd: task %q has waited %s; notifying\n", id, counted.Round(time.Minute))
+			long = append(long, longHold{taskID: id, reason: reason, waited: counted})
 			announced[id] = true
 		}
 	}
-	h.byTask, h.logged, h.announced = next, logged, announced
+	h.byTask, h.logged, h.announced, h.counting = next, logged, announced, counting
 	return long
 }
 

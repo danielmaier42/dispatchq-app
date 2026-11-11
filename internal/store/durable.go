@@ -60,19 +60,15 @@ func transient(err error) bool {
 	return errors.As(err, &pathErr) || errors.As(err, &linkErr) || errors.As(err, &sysErr)
 }
 
-// appendRun is AppendRun's work: it queues r (only on the first attempt) and
-// writes everything waiting.
+// flushPending is one attempt of AppendRun: it writes everything waiting.
 // The cross-process lock keeps the append out of another process's rewrite of
 // history (PruneHistory, PruneQuietRuns), which would otherwise replace the
 // file with a copy that lacks it, and lets a failed write cut back only its
 // own bytes.
-func (s *Store) appendRun(r Run, first bool) error {
+func (s *Store) flushPending() error {
 	return s.withWriteLock(func() error {
 		s.mu.Lock()
 		defer s.mu.Unlock()
-		if first {
-			s.queueLocked(r)
-		}
 		return s.flushLocked()
 	})
 }

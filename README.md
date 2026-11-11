@@ -476,8 +476,11 @@ explains it.
   pauses the continuation turns it into an ordinary limit resume. Cut off a
   second time, even after such a pause, the task is retired. A
   task deleted meanwhile is not continued.
-  Recurring tasks start their next occurrence fresh as before, and scripts
-  are not continued.
+  This needs a session the harness itself named: one it reported before the
+  cut, or a Claude Code transcript on disk. Without one (a Codex or opencode
+  run taken back or ended while DispatchQ was down, a harness stopped before
+  it started), the task is retired as before. Recurring tasks start their
+  next occurrence fresh as before, and scripts are not continued.
 - **Runs survive a daemon restart.** A run's process does not stop when the
   daemon does (an update, a crash). The next daemon takes the run back: it
   shows as *running* with its process id, its task is not started a second

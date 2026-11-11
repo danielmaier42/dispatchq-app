@@ -80,12 +80,15 @@ func (a *Adapter) SessionOutcome(inst provider.Instance, sessionID string, since
 	if err := sc.Err(); err != nil {
 		return provider.Result{}, false, fmt.Errorf("read session %s: %w", sessionID, err)
 	}
+	// The transcript exists, so the session can be continued whatever its
+	// last turn says.
+	cutOff := provider.Result{SessionID: sessionID, SessionConfirmed: true}
 	if len(tail) == 0 || tail[0].Type != "assistant" {
-		return provider.Result{}, false, nil // ended on a tool result or a prompt: cut off mid-turn
+		return cutOff, false, nil // ended on a tool result or a prompt: cut off mid-turn
 	}
 	last := tail[len(tail)-1]
 	if last.Timestamp.Before(since) {
-		return provider.Result{}, false, nil // an earlier run's answer; this run left none
+		return cutOff, false, nil // an earlier run's answer; this run left none
 	}
 
 	var text []string
@@ -117,9 +120,10 @@ func (a *Adapter) SessionOutcome(inst provider.Instance, sessionID string, since
 	case last.Message.StopReason == "end_turn" || last.Message.StopReason == "stop_sequence":
 		c.Add(provider.Event{Type: provider.EventCompleted, FinalOutput: answer})
 	default:
-		return provider.Result{}, false, nil // the model was still working (a tool call under way)
+		return cutOff, false, nil // the model was still working (a tool call under way)
 	}
 	res := c.Result(0)
+	res.SessionConfirmed = true
 	res.EndedAt = last.Timestamp
 	return res, true, nil
 }

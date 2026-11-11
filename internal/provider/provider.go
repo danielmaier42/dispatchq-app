@@ -362,6 +362,12 @@ type Result struct {
 	FinalOutput string
 	// Metrics are the reported usage figures, nil when the harness reported none.
 	Metrics *Metrics
+	// SessionConfirmed is set when the harness itself named the session (on
+	// its output, or by a transcript on disk), so the session id can be
+	// resumed. A session id DispatchQ assigned up front may never have been
+	// taken up: Codex picks its own, and a harness killed before it started
+	// has none.
+	SessionConfirmed bool
 	// EndedAt is when the run ended, for an outcome read back afterwards from
 	// the harness's transcript (see SessionReader). Zero means it ended now.
 	EndedAt time.Time

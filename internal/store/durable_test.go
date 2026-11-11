@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -307,5 +308,39 @@ func TestALimitKeepsTheSpentContinuation(t *testing.T) {
 	p, _ := st.PendingResume("a")
 	if p.InterruptedRun != "run-1" || p.AfterInterrupt || p.SessionID != "sess-forked" {
 		t.Fatalf("pending after a limit = %+v, want a limit resume that keeps run-1 as spent", p)
+	}
+}
+
+// The review finding: when the lock file could not be opened on the first
+// attempt (a system out of file handles), the record was never queued, and
+// AppendRun reported success with the record nowhere.
+func TestAppendRunSurvivesALockThatCannotBeHadAtFirst(t *testing.T) {
+	s := openTemp(t)
+	lock := s.path(lockFile)
+	if err := os.Mkdir(lock, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s.sleep = func(time.Duration) { _ = os.Remove(lock) }
+	if err := s.AppendRun(finishedRun("r1", StatusFailed)); err != nil {
+		t.Fatalf("AppendRun: %v", err)
+	}
+	if got := historyIDs(t, s); strings.Join(got, ",") != "r1:failed" {
+		t.Fatalf("history = %v, want the record once the lock could be had", got)
+	}
+}
+
+// A lock that can never be had keeps the record rather than losing it.
+func TestAppendRunKeepsTheRecordWhenTheLockCannotBeHad(t *testing.T) {
+	s := openTemp(t)
+	if err := os.Mkdir(s.path(lockFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s.sleep = func(time.Duration) {}
+	err := s.AppendRun(finishedRun("r1", StatusFailed))
+	if !errors.Is(err, ErrRunKept) {
+		t.Fatalf("AppendRun = %v, want the record reported as kept", err)
+	}
+	if _, err := os.Stat(s.pendingPath("r1")); err != nil {
+		t.Fatalf("no fallback file: %v", err)
 	}
 }

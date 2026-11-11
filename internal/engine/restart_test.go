@@ -42,6 +42,15 @@ func diedUnder(t *testing.T, tk task.Task) (*Engine, *store.Store, *stub) {
 	return e, st, second
 }
 
+// sessionOnDisk stands in for a harness whose transcript of the run's session
+// exists but cannot say how the turn ended: the session is known to the
+// harness and can be continued.
+func sessionOnDisk(e *Engine) {
+	e.SetSessionReader(func(rec store.Run) (provider.Result, bool) {
+		return provider.Result{SessionID: rec.SessionID, SessionConfirmed: true}, false
+	})
+}
+
 // The incident: nine runs cut off by a daemon restart in five days, written
 // off at the next start with nobody told. The write-off notifies like any
 // failed run.
@@ -90,6 +99,7 @@ func TestRecoverRecordsAQuietRunCutOffByARestart(t *testing.T) {
 // session instead, once; cut off a second time, it is retired.
 func TestRecoverContinuesAnInterruptedOneShotOnce(t *testing.T) {
 	e, st, second := diedUnder(t, asapTask("relock", false))
+	sessionOnDisk(e)
 	if _, _, err := e.Recover(); err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +126,7 @@ func TestRecoverContinuesAnInterruptedOneShotOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.conclude(asapTask("relock", false), "claude", latestRun(t, st, "run-1"),
-		provider.Result{Status: store.StatusFailed, SessionID: "sess-1", Message: store.InterruptedError},
+		provider.Result{Status: store.StatusFailed, SessionID: "sess-1", SessionConfirmed: true, Message: store.InterruptedError},
 		nil, outcome{interrupted: true})
 	s, _ := st.LoadState()
 	if _, waiting := s.PendingResume("relock"); waiting || !s.IsCompletedOnce("relock") {
@@ -230,13 +240,14 @@ func TestRecoverRecordsTheRealOutcomeOfARunThatEndedUnwatched(t *testing.T) {
 // counted it as a second interruption.
 func TestTheSameInterruptedRunIsNotCountedTwice(t *testing.T) {
 	e, st, _ := diedUnder(t, asapTask("relock", false))
+	sessionOnDisk(e)
 	if _, _, err := e.Recover(); err != nil {
 		t.Fatal(err)
 	}
 	run := latestRun(t, st, "run-1")
 	run.Status, run.Error, run.FinishedAt = store.StatusRunning, "", nil
 	e.conclude(asapTask("relock", false), "claude", run,
-		provider.Result{Status: store.StatusFailed, SessionID: "sess-1", Message: store.InterruptedError},
+		provider.Result{Status: store.StatusFailed, SessionID: "sess-1", SessionConfirmed: true, Message: store.InterruptedError},
 		nil, outcome{interrupted: true})
 	s, _ := st.LoadState()
 	if p, ok := s.PendingResume("relock"); !ok || !p.AfterInterrupt || s.IsCompletedOnce("relock") {
@@ -248,6 +259,7 @@ func TestTheSameInterruptedRunIsNotCountedTwice(t *testing.T) {
 // had a continuation planned for it anyway.
 func TestNoContinuationForATaskNoLongerQueued(t *testing.T) {
 	e, st, _ := diedUnder(t, asapTask("relock", false))
+	sessionOnDisk(e)
 	saveTasks(t, st) // the task was deleted meanwhile
 	if _, _, err := e.Recover(); err != nil {
 		t.Fatal(err)
@@ -263,6 +275,7 @@ func TestNoContinuationForATaskNoLongerQueued(t *testing.T) {
 // the next start as cut off and its finished one-shot continued again.
 func TestNoContinuationForAOneShotAlreadyCompleted(t *testing.T) {
 	e, st, second := diedUnder(t, asapTask("relock", false))
+	sessionOnDisk(e)
 	if err := st.UpdateState(func(s *store.State) error {
 		s.MarkCompletedOnce("relock")
 		s.OweRemoval("relock")
@@ -282,5 +295,46 @@ func TestNoContinuationForAOneShotAlreadyCompleted(t *testing.T) {
 	}
 	if cfg, _ := st.LoadConfig(); len(cfg.Tasks) != 0 {
 		t.Fatal("the completed one-shot is still queued")
+	}
+}
+
+// The review finding: a Codex run picks its own session id, and a harness
+// killed before it started has none, so the id DispatchQ assigned up front
+// may name no session at all. Without the harness having named the session,
+// a cut-off one-shot is retired as before instead of resuming nothing.
+func TestNoContinuationWithoutASessionTheHarnessNamed(t *testing.T) {
+	e, st, second := diedUnder(t, asapTask("codex-job", false)) // no transcript reader
+	if _, _, err := e.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	e.WaitIdle()
+	if n := len(second.requests()); n != 0 {
+		t.Fatalf("the one-shot ran again (%d runs), resuming a session nobody named", n)
+	}
+	s, _ := st.LoadState()
+	if _, ok := s.PendingResume("codex-job"); ok {
+		t.Fatal("a continuation was planned for an unconfirmed session")
+	}
+}
+
+// The same holds for a run the shutdown cut off before its harness named the
+// session.
+func TestShutdownCutOffBeforeTheSessionWasNamedIsRetired(t *testing.T) {
+	fc := clock.NewFake(time.Date(2026, 11, 9, 9, 31, 27, 0, time.UTC))
+	r := &ctxStub{unconfirmed: true}
+	e, st := newTestEngine(t, r, fc)
+	saveTasks(t, st, asapTask("q-early", false))
+	if err := e.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return r.activeStarted() == 1 })
+	e.runCancel()
+	e.WaitIdle()
+	s, _ := st.LoadState()
+	if _, ok := s.PendingResume("q-early"); ok {
+		t.Fatal("a continuation was planned for a session the harness never named")
 	}
 }

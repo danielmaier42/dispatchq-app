@@ -87,6 +87,10 @@ func TestSessionOutcome(t *testing.T) {
 			if ok != tc.ok {
 				t.Fatalf("ok = %v, want %v (result %+v)", ok, tc.ok, res)
 			}
+			// A transcript on disk names the session, whatever its turn says.
+			if want := tc.lines != nil; res.SessionConfirmed != want {
+				t.Fatalf("session confirmed = %v, want %v", res.SessionConfirmed, want)
+			}
 			if !ok {
 				return
 			}

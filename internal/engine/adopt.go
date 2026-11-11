@@ -222,8 +222,8 @@ func (e *Engine) Recover() (adopted []store.Run, interrupted int, err error) {
 		// recorded and notified, but must not retire the task or plan a resume
 		// under the run that came after it.
 		current := !tasks[rec.TaskID] && !rec.StartedAt.Before(latest[rec.TaskID])
-		e.settleEnded(rec, current)
-		if _, ok := goneRuns[rec.RunID]; ok {
+		recorded := e.settleEnded(rec, current)
+		if _, ok := goneRuns[rec.RunID]; ok && recorded {
 			e.clearLive(rec.RunID)
 		}
 		interrupted++
@@ -286,18 +286,21 @@ func latestStarts(history, ended []store.Run) map[string]time.Time {
 //
 // current says whether the run is its task's latest, the one whose end the
 // task's schedule follows; for any other only the record is written.
-func (e *Engine) settleEnded(rec store.Run, current bool) {
+//
+// It reports whether the outcome was written or kept (see conclude).
+func (e *Engine) settleEnded(rec store.Run, current bool) bool {
 	t := e.taskOf(rec)
 	rec.PID = 0
 	how := outcome{keepSchedule: !current}
 	res, ok := e.sessionOutcome(rec)
 	if !ok {
-		res = provider.Result{Status: store.StatusFailed, SessionID: rec.SessionID, Message: store.InterruptedError}
+		res = provider.Result{Status: store.StatusFailed, SessionID: rec.SessionID,
+			SessionConfirmed: res.SessionConfirmed, Message: store.InterruptedError}
 		how.interrupted = true
 	}
 	fmt.Fprintf(os.Stdout, "dispatchqd: run %s (%s) ended while no daemon watched it: %s\n",
 		rec.RunID, rec.TaskName, endedText(res))
-	e.conclude(t, rec.Provider.ID, rec, res, nil, how)
+	return e.conclude(t, rec.Provider.ID, rec, res, nil, how)
 }
 
 // endedText is how the daemon log names the outcome of a run that ended
@@ -492,11 +495,13 @@ func (e *Engine) watchAdopted(ctx context.Context, t task.Task, providerID strin
 	// Without an outcome to read, the run counts as cut off, as a run that
 	// ended before the restart does (see settleEnded): its one-shot task
 	// continues the session once instead of being retired half done.
-	if res, ok := e.sessionOutcome(rec); ok {
-		e.finish(t, providerID, rec, res, nil)
+	read, ok := e.sessionOutcome(rec)
+	if ok {
+		e.finish(t, providerID, rec, read, nil)
 		return
 	}
-	res := provider.Result{Status: store.StatusFailed, SessionID: rec.SessionID, Message: adoptedEndMessage}
+	res := provider.Result{Status: store.StatusFailed, SessionID: rec.SessionID,
+		SessionConfirmed: read.SessionConfirmed, Message: adoptedEndMessage}
 	e.end(t, providerID, rec, res, nil, true)
 }
 

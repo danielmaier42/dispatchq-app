@@ -33,7 +33,8 @@ const adoptPoll = 5 * time.Second
 const legacyAdoptWindow = 7 * 24 * time.Hour
 
 // adoptedEndMessage is the reason a taken-back run ends with when its process
-// ends on its own. Its exit status went to the daemon that started it, and its
+// ends on its own and its harness's transcript cannot tell how (see
+// sessionOutcome). Its exit status went to the daemon that started it, and its
 // output pipe closed with that daemon, so neither can be read any more.
 const adoptedEndMessage = "the run's process ended after DispatchQ restarted and took it back; " +
 	"its exit status and any output written after the restart could not be captured " +
@@ -97,9 +98,12 @@ func (e *Engine) alive(pid int, start string) bool {
 }
 
 // Recover runs once at startup, before the first tick. It takes back every run
-// whose process outlived the previous daemon and marks every other run still
-// recorded as running as interrupted. It returns the runs it took back and how
-// many it marked interrupted.
+// whose process outlived the previous daemon, and records the end of every
+// other run that was in flight: still recorded as running, or a quiet-history
+// run known only by its process record. Such a run is recorded with the
+// outcome its harness's transcript shows, or as interrupted, and notified like
+// any run that ends (see settleEnded). It returns the runs it took back and how
+// many ended runs it recorded.
 //
 // A run is found in two ways. The usual one is the process recorded when it
 // started (State.LiveRuns), checked against its start time so a reused PID is
@@ -141,10 +145,12 @@ func (e *Engine) Recover() (adopted []store.Run, interrupted int, err error) {
 	keep := map[string]bool{}
 	tasks := map[string]bool{} // one run per task: the task's active slot is a set
 	var gone []string
+	goneRuns := map[string]store.Run{}
 	for id, l := range st.LiveRuns {
 		switch {
 		case !e.alive(l.PID, l.ProcessStart):
 			gone = append(gone, id)
+			goneRuns[id] = l.Run
 		case !orphaned[l.PID] || tasks[l.Run.TaskID]:
 			// Still owned by the process that started it (a `dispatchq
 			// run-now` that records its own end), so neither taken back nor
@@ -184,9 +190,24 @@ func (e *Engine) Recover() (adopted []store.Run, interrupted int, err error) {
 		tasks[r.TaskID] = true
 	}
 
-	if len(gone) > 0 {
+	ended := endedRuns(runs, goneRuns, keep)
+	// A gone run's process record is forgotten only once its end is recorded:
+	// for a quiet-history run it is the only trace, and a daemon stopped in
+	// the middle of this must find it again. One whose end history already
+	// holds is forgotten now.
+	settling := map[string]bool{}
+	for _, r := range ended {
+		settling[r.RunID] = true
+	}
+	var forget []string
+	for _, id := range gone {
+		if !settling[id] {
+			forget = append(forget, id)
+		}
+	}
+	if len(forget) > 0 {
 		if err := e.store.UpdateState(func(st *store.State) error {
-			for _, id := range gone {
+			for _, id := range forget {
 				st.ClearLiveRun(id)
 			}
 			return nil
@@ -194,9 +215,18 @@ func (e *Engine) Recover() (adopted []store.Run, interrupted int, err error) {
 			return nil, 0, fmt.Errorf("forget ended runs: %w", err)
 		}
 	}
-	interrupted, err = e.store.ReconcileRunningRuns(now, keep)
-	if err != nil {
-		return nil, interrupted, fmt.Errorf("reconcile runs: %w", err)
+	latest := latestStarts(runs, ended)
+	for _, rec := range ended {
+		// Only a task's latest run speaks for its schedule. An older one, or
+		// one whose task has a run going on that is being taken back, is
+		// recorded and notified, but must not retire the task or plan a resume
+		// under the run that came after it.
+		current := !tasks[rec.TaskID] && !rec.StartedAt.Before(latest[rec.TaskID])
+		e.settleEnded(rec, current)
+		if _, ok := goneRuns[rec.RunID]; ok {
+			e.clearLive(rec.RunID)
+		}
+		interrupted++
 	}
 	for _, f := range take {
 		rec, err := e.adopt(f.rec, f.pid, f.start)
@@ -206,6 +236,103 @@ func (e *Engine) Recover() (adopted []store.Run, interrupted int, err error) {
 		adopted = append(adopted, rec)
 	}
 	return adopted, interrupted, nil
+}
+
+// endedRuns are the runs that ended while no daemon watched them: every run
+// still recorded as running whose process is not being taken back (keep), and
+// every run whose recorded process is gone. A quiet-history task's run has no
+// history entry until it ends, so its process record is all there is of it.
+// A run history already has an outcome for is left alone.
+func endedRuns(history []store.Run, gone map[string]store.Run, keep map[string]bool) []store.Run {
+	var out []store.Run
+	seen := map[string]bool{}
+	for _, r := range history {
+		seen[r.RunID] = true
+		if r.Status == store.StatusRunning && !keep[r.RunID] {
+			out = append(out, r)
+		}
+	}
+	ids := make([]string, 0, len(gone))
+	for id := range gone {
+		if !seen[id] && !keep[id] {
+			ids = append(ids, id)
+		}
+	}
+	slices.Sort(ids)
+	for _, id := range ids {
+		out = append(out, gone[id])
+	}
+	return out
+}
+
+// latestStarts is the start of each task's latest run.
+func latestStarts(history, ended []store.Run) map[string]time.Time {
+	out := map[string]time.Time{}
+	for _, list := range [][]store.Run{history, ended} {
+		for _, r := range list {
+			if r.StartedAt.After(out[r.TaskID]) {
+				out[r.TaskID] = r.StartedAt
+			}
+		}
+	}
+	return out
+}
+
+// settleEnded records the outcome of a run that ended while no daemon watched
+// it. Its harness's transcript says how it ended when it can (see
+// sessionOutcome); otherwise it is written off as interrupted. Either way it
+// goes through the same recording as any run's end: history, the task's
+// scheduling state, the notification.
+//
+// current says whether the run is its task's latest, the one whose end the
+// task's schedule follows; for any other only the record is written.
+func (e *Engine) settleEnded(rec store.Run, current bool) {
+	t := e.taskOf(rec)
+	rec.PID = 0
+	how := outcome{keepSchedule: !current}
+	res, ok := e.sessionOutcome(rec)
+	if !ok {
+		res = provider.Result{Status: store.StatusFailed, SessionID: rec.SessionID, Message: store.InterruptedError}
+		how.interrupted = true
+	}
+	fmt.Fprintf(os.Stdout, "dispatchqd: run %s (%s) ended while no daemon watched it: %s\n",
+		rec.RunID, rec.TaskName, endedText(res))
+	e.conclude(t, rec.Provider.ID, rec, res, nil, how)
+}
+
+// endedText is how the daemon log names the outcome of a run that ended
+// unwatched.
+func endedText(res provider.Result) string {
+	if res.Message != "" {
+		return string(res.Status) + " (" + res.Message + ")"
+	}
+	return string(res.Status) + " (read from its session)"
+}
+
+// taskOf is the task a run ran: the snapshot it carries, or, for a run
+// recorded before runs carried one, the queued task of that id.
+func (e *Engine) taskOf(rec store.Run) task.Task {
+	if rec.Task != nil {
+		return *rec.Task
+	}
+	if cfg, err := e.store.LoadConfig(); err == nil {
+		for _, t := range cfg.Tasks {
+			if t.ID == rec.TaskID {
+				return t
+			}
+		}
+	}
+	return task.Task{ID: rec.TaskID, Name: rec.TaskName}
+}
+
+// sessionOutcome reads a run's real outcome from its harness's transcript,
+// for a run whose output DispatchQ could not read to its end. ok is false
+// when there is no reader or the transcript cannot tell.
+func (e *Engine) sessionOutcome(rec store.Run) (provider.Result, bool) {
+	if e.readSession == nil {
+		return provider.Result{}, false
+	}
+	return e.readSession(rec)
 }
 
 // repairRecords writes the run records an earlier process kept back because
@@ -236,7 +363,7 @@ func legacyCandidate(r store.Run, now time.Time) bool {
 	switch {
 	case r.Status == store.StatusRunning:
 		return true
-	case r.Status == store.StatusFailed && r.Error == store.InterruptedError:
+	case r.Status == store.StatusFailed && strings.HasPrefix(r.Error, store.InterruptedError):
 		return r.FinishedAt != nil && now.Sub(*r.FinishedAt) < legacyAdoptWindow
 	}
 	return false
@@ -274,10 +401,7 @@ func hasArgPair(fields []string, flag, value string) bool {
 // started: its task does not start again, it holds its concurrency slot, and
 // it can be cancelled or taken over. The caller is Recover, before any tick.
 func (e *Engine) adopt(rec store.Run, pid int, start string) (store.Run, error) {
-	t := task.Task{ID: rec.TaskID, Name: rec.TaskName}
-	if rec.Task != nil {
-		t = *rec.Task
-	}
+	t := e.taskOf(rec)
 	rec.Status = store.StatusRunning
 	rec.FinishedAt = nil
 	rec.Error = ""
@@ -365,7 +489,15 @@ func (e *Engine) watchAdopted(ctx context.Context, t task.Task, providerID strin
 		case <-tick.C:
 		}
 	}
-	e.finish(t, providerID, rec, provider.Result{Status: store.StatusFailed, Message: adoptedEndMessage}, nil)
+	// Without an outcome to read, the run counts as cut off, as a run that
+	// ended before the restart does (see settleEnded): its one-shot task
+	// continues the session once instead of being retired half done.
+	if res, ok := e.sessionOutcome(rec); ok {
+		e.finish(t, providerID, rec, res, nil)
+		return
+	}
+	res := provider.Result{Status: store.StatusFailed, SessionID: rec.SessionID, Message: adoptedEndMessage}
+	e.end(t, providerID, rec, res, nil, true)
 }
 
 // letGo gives back a taken-back run's slot without recording an outcome, for a

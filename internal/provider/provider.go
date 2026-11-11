@@ -362,6 +362,9 @@ type Result struct {
 	FinalOutput string
 	// Metrics are the reported usage figures, nil when the harness reported none.
 	Metrics *Metrics
+	// EndedAt is when the run ended, for an outcome read back afterwards from
+	// the harness's transcript (see SessionReader). Zero means it ended now.
+	EndedAt time.Time
 }
 
 // Parser reads one run's output. Adapters return a fresh parser per run, so a

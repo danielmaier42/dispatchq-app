@@ -388,36 +388,6 @@ func (s *Store) Runs() ([]Run, error) {
 // as running at startup, with no process of it left.
 const InterruptedError = "interrupted before completing (daemon stopped unexpectedly)"
 
-// ReconcileRunningRuns marks any run still recorded as "running" as failed,
-// except the runs in keep. It is meant to run at startup, after the daemon has
-// taken back the runs whose process outlived its predecessor (keep): every
-// other "running" entry is a leftover from a hard stop that never got to
-// record an outcome. Returns how many it reconciled.
-func (s *Store) ReconcileRunningRuns(now time.Time, keep map[string]bool) (int, error) {
-	runs, err := s.Runs()
-	if err != nil {
-		return 0, err
-	}
-	n := 0
-	for _, r := range runs {
-		if r.Status != StatusRunning || keep[r.RunID] {
-			continue
-		}
-		r.Status = StatusFailed
-		r.PID = 0
-		fin := now
-		r.FinishedAt = &fin
-		if r.Error == "" {
-			r.Error = InterruptedError
-		}
-		if err := s.AppendRun(r); err != nil {
-			return n, err
-		}
-		n++
-	}
-	return n, nil
-}
-
 // BackfillLastRuns fills in State.LastRunAt from run history for tasks that
 // have no entry yet. It exists for installs that predate the field: without it
 // a recurring task would show no last execution until it next runs. Tasks

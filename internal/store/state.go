@@ -207,6 +207,17 @@ type PendingResume struct {
 	// provider cannot continue a session the old one owns, and dispatchq does not
 	// try — it starts fresh and says so.
 	ProviderID string `json:"provider_id,omitempty"`
+	// AfterInterrupt marks a session that continues because DispatchQ itself
+	// cut its run off (a shutdown, a daemon that died), not because of a limit.
+	// Such a session gets one more go: interrupted again, the task is retired.
+	AfterInterrupt bool `json:"after_interrupt,omitempty"`
+	// InterruptedRun is the run whose interruption planned a continuation of
+	// this task, so the same run met again (a daemon that died before
+	// recording it) does not count as a second interruption. It outlives the
+	// continuation's own pauses, unlike AfterInterrupt: a limit that pauses
+	// the continuation makes it an ordinary limit resume, but its one more go
+	// is spent.
+	InterruptedRun string `json:"interrupted_run,omitempty"`
 }
 
 // UnmarshalJSON accepts the shape written before the provider travelled with
@@ -354,8 +365,25 @@ func (s *State) PendingResume(taskID string) (PendingResume, bool) {
 
 // SetPendingResume records that a task should continue the given session on the
 // provider that issued it.
+//
+// A task already continuing after an interruption keeps the record of that
+// (InterruptedRun) when a limit pauses it, whatever session id the harness
+// reports: it was given its one more go, and a pause on the way does not give
+// it another.
 func (s *State) SetPendingResume(taskID, sessionID, providerID string) {
-	s.PendingResumes[taskID] = PendingResume{SessionID: sessionID, ProviderID: providerID}
+	next := PendingResume{SessionID: sessionID, ProviderID: providerID}
+	if prev, ok := s.PendingResumes[taskID]; ok {
+		next.InterruptedRun = prev.InterruptedRun
+	}
+	s.PendingResumes[taskID] = next
+}
+
+// SetInterruptedResume records that a task should continue the session a
+// DispatchQ shutdown or crash cut off (see PendingResume.AfterInterrupt).
+func (s *State) SetInterruptedResume(taskID, sessionID, providerID, runID string) {
+	s.PendingResumes[taskID] = PendingResume{
+		SessionID: sessionID, ProviderID: providerID, AfterInterrupt: true, InterruptedRun: runID,
+	}
 }
 
 // ClearPendingResume clears any pending resume for a task.

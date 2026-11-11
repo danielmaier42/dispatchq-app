@@ -33,6 +33,10 @@ const (
 	// that it is news nobody needs on screen, and the Notifications view
 	// lists it anyway.
 	DesktopRetryWindow = time.Hour
+	// WakeRetryWindow is how long after a wake every sweep tries the whole
+	// outbox: Wi-Fi often comes up a little after the machine does, and a
+	// try that fails in that gap must not push the next one minutes away.
+	WakeRetryWindow = 2 * time.Minute
 )
 
 // deliveries tracks which outbox entries a goroutine is trying right now, so
@@ -40,10 +44,16 @@ const (
 // whether the next sweep should try everything at once instead of waiting for
 // each entry's pause (after a wake, or once a channel works again).
 type deliveries struct {
-	mu       sync.Mutex
-	claimed  map[string]bool
-	force    bool
-	sweeping bool
+	mu      sync.Mutex
+	claimed map[string]bool
+	// forceOnce makes the next sweep try everything; forceUntil every sweep
+	// up to then.
+	forceOnce  bool
+	forceUntil time.Time
+	sweeping   bool
+	// remote is the remote channels last known, so a send while the settings
+	// cannot be read still queues them instead of losing the push.
+	remote []string
 }
 
 // claim marks ids as being tried and returns the ones nobody else holds.
@@ -74,21 +84,47 @@ func (d *deliveries) release(ids []string) {
 // retrySoon makes the next sweep try every waiting delivery at once.
 func (d *deliveries) retrySoon() {
 	d.mu.Lock()
-	d.force = true
+	d.forceOnce = true
+	d.mu.Unlock()
+}
+
+// retryUntil makes every sweep up to until try every waiting delivery.
+func (d *deliveries) retryUntil(until time.Time) {
+	d.mu.Lock()
+	if until.After(d.forceUntil) {
+		d.forceUntil = until
+	}
 	d.mu.Unlock()
 }
 
 // startSweep reports whether a sweep may start (none is running) and whether
-// it is to try everything at once, clearing that request.
-func (d *deliveries) startSweep() (ok, force bool) {
+// it is to try everything at once, clearing a one-off request.
+func (d *deliveries) startSweep(now time.Time) (ok, force bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	if d.sweeping {
 		return false, false
 	}
 	d.sweeping = true
-	force, d.force = d.force, false
+	force = d.forceOnce || now.Before(d.forceUntil)
+	d.forceOnce = false
 	return true, force
+}
+
+// knownRemote remembers the remote channels of a successful lookup, and
+// returns the ones remembered.
+func (d *deliveries) knownRemote(chans []notify.Channel, ok bool) []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if ok {
+		d.remote = d.remote[:0]
+		for _, c := range chans {
+			if c.Remote {
+				d.remote = append(d.remote, c.Name)
+			}
+		}
+	}
+	return slices.Clone(d.remote)
 }
 
 func (d *deliveries) endSweep() {
@@ -100,7 +136,9 @@ func (d *deliveries) endSweep() {
 // channels lists where notifications go right now, by name.
 func (e *Engine) channels() ([]notify.Channel, error) {
 	if c, ok := e.notifier.(notify.Channels); ok {
-		return c.Channels()
+		chans, err := c.Channels()
+		e.outbox.knownRemote(chans, err == nil)
+		return chans, err
 	}
 	return []notify.Channel{{Name: "notify", Remote: true, Notifier: e.notifier}}, nil
 }
@@ -134,10 +172,19 @@ func newInboxID(now time.Time) string {
 // leaves it there to be tried again; a channel that takes it removes it.
 func (e *Engine) deliver(n notify.Notification, now time.Time) {
 	chans, err := e.channels()
+	// Remote channels that were there before the settings stopped loading
+	// are queued without a try: the sweep sends them once the settings load
+	// again, or drops them if they were switched off meanwhile.
+	var later []string
 	if err != nil {
-		fmt.Fprintf(e.deliveryErrLog, "dispatchqd: notify: %v (sending to the channels that are known)\n", err)
+		fmt.Fprintf(e.deliveryErrLog, "dispatchqd: notify: %v (sending to the channels that are known, queueing the others)\n", err)
+		for _, name := range e.outbox.knownRemote(nil, false) {
+			if !slices.ContainsFunc(chans, func(c notify.Channel) bool { return c.Name == name }) {
+				later = append(later, name)
+			}
+		}
 	}
-	if len(chans) == 0 {
+	if len(chans)+len(later) == 0 {
 		return
 	}
 	body, err := json.Marshal(n)
@@ -145,23 +192,28 @@ func (e *Engine) deliver(n notify.Notification, now time.Time) {
 		fmt.Fprintf(e.deliveryErrLog, "dispatchqd: notification %q not encoded: %v\n", n.Title, err)
 		return
 	}
-	key := n.ID
-	if key == "" {
-		key = "d-" + now.UTC().Format("20060102T150405") + "-" + randid.Hex(3)
-	}
+	// Every send gets its own key, also when it repeats an inbox id (a
+	// failure streak's reminder), so it never replaces or collides with a
+	// delivery of the same notification still waiting.
+	key := "d-" + now.UTC().Format("20060102T150405") + "-" + randid.Hex(4)
 	pending := make([]store.PendingDelivery, len(chans))
 	ids := make([]string, len(chans))
 	for i, c := range chans {
 		pending[i] = store.PendingDelivery{ID: key + "/" + c.Name, Channel: c.Name, Notification: body, Created: now, NextTry: now}
 		ids[i] = pending[i].ID
 	}
+	queued := slices.Clone(pending)
+	for _, name := range later {
+		queued = append(queued, store.PendingDelivery{ID: key + "/" + name, Channel: name, Notification: body, Created: now, NextTry: now})
+	}
 	// Claimed before they are written, so a retry sweep reading the outbox
-	// in between finds them taken and leaves them to this send. The ids are
-	// new, so nobody else can hold them yet.
-	e.outbox.claim(ids)
-	defer e.outbox.release(ids)
+	// in between finds them taken and leaves them to this send. Only what was
+	// claimed is tried and released: releasing someone else's claim would let
+	// a third goroutine take the same delivery.
+	mine := e.outbox.claim(ids)
+	defer e.outbox.release(mine)
 	durable := true
-	if err := e.store.AddPendingDeliveries(pending...); err != nil {
+	if err := e.store.AddPendingDeliveries(queued...); err != nil {
 		// Still try once: an unwritable outbox must not cost the alert itself.
 		fmt.Fprintf(e.deliveryErrLog, "dispatchqd: notification %q not queued for retry: %v\n", n.Title, err)
 		durable = false
@@ -170,6 +222,9 @@ func (e *Engine) deliver(n notify.Notification, now time.Time) {
 	tries := make([]deliveryTry, len(chans))
 	var wg sync.WaitGroup
 	for i, c := range chans {
+		if !slices.Contains(mine, ids[i]) {
+			continue
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -177,7 +232,7 @@ func (e *Engine) deliver(n notify.Notification, now time.Time) {
 		}()
 	}
 	wg.Wait()
-	e.settle(tries, durable)
+	e.settle(slices.DeleteFunc(tries, func(t deliveryTry) bool { return t.entry.ID == "" }), durable)
 }
 
 // deliveryTry is the outcome of one try on one channel.
@@ -188,6 +243,10 @@ type deliveryTry struct {
 	receipt string
 	err     error
 	at      time.Time
+	// forced is a try made out of turn (after a wake): when it fails on the
+	// network it does not count, so Wi-Fi coming up a little late does not
+	// cost minutes of pause.
+	forced bool
 }
 
 // try delivers n on one channel. parent is what may cut the try short: nothing
@@ -239,6 +298,11 @@ func (e *Engine) settle(tries []deliveryTry, durable bool) {
 		case t.at.Sub(t.entry.Created) >= retryWindow(t.channel):
 			done[t.entry.ID] = true
 			e.logLost(t.title, t.channel, attempt, t.err.Error())
+		case t.forced && !notify.Refused(t.err):
+			next := t.entry
+			next.NextTry = t.at
+			next.LastError = t.err.Error()
+			retry[next.ID] = next
 		default:
 			next := t.entry
 			next.Attempts = attempt
@@ -323,11 +387,22 @@ func (e *Engine) retryDeliveries(force bool) {
 	for _, d := range pending {
 		ids = append(ids, d.ID)
 	}
+	if e.afterOutboxRead != nil {
+		e.afterOutboxRead()
+	}
 	mine := e.outbox.claim(ids)
 	defer e.outbox.release(mine)
 	held := make(map[string]bool, len(mine))
 	for _, id := range mine {
 		held[id] = true
+	}
+	// What was read before the claim may be stale: a send that held an entry
+	// meanwhile may have delivered and removed it, or counted a try. Only
+	// what is still in the outbox, as it is now, is tried.
+	pending, err = e.store.PendingDeliveries()
+	noteErr(&e.lastDeliveryErr, "read the notification outbox", err)
+	if err != nil {
+		return
 	}
 
 	gone := map[string]bool{}
@@ -367,6 +442,7 @@ func (e *Engine) retryDeliveries(force bool) {
 					continue
 				}
 				t := e.try(e.runCtx, c, d, n)
+				t.forced = force
 				mu.Lock()
 				tries = append(tries, t)
 				if t.err != nil && !notify.Permanent(t.err) {
@@ -414,10 +490,11 @@ func (e *Engine) sweepDeliveries(woke bool) {
 	if e.notifier == nil {
 		return
 	}
+	now := e.clock.Now()
 	if woke {
-		e.outbox.retrySoon()
+		e.outbox.retryUntil(now.Add(WakeRetryWindow))
 	}
-	ok, force := e.outbox.startSweep()
+	ok, force := e.outbox.startSweep(now)
 	if !ok {
 		return
 	}

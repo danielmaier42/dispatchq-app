@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -100,5 +101,24 @@ func TestDeliverFallsBackToNotify(t *testing.T) {
 	boom := errors.New("boom")
 	if receipt, err := Deliver(context.Background(), plainNotifier{err: boom}, Notification{}); receipt != "" || !errors.Is(err, boom) {
 		t.Fatalf("Deliver = %q, %v", receipt, err)
+	}
+}
+
+// For a Slack or Discord webhook the URL is the secret; a failed request must
+// not quote it into the daemon log or the outbox.
+func TestFailedRequestDoesNotQuoteTheURL(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	addr := srv.URL
+	srv.Close() // nothing listens any more
+	w := Webhook{URL: addr + "/services/T000/B000/s3cr3tT0ken"}
+	_, err := w.Deliver(context.Background(), Notification{Title: "t"})
+	if err == nil {
+		t.Fatal("delivered to a closed port")
+	}
+	if strings.Contains(err.Error(), "s3cr3tT0ken") || strings.Contains(err.Error(), "/services/") {
+		t.Fatalf("error quotes the URL: %v", err)
+	}
+	if !strings.Contains(err.Error(), strings.TrimPrefix(addr, "http://")) {
+		t.Fatalf("error does not name the host: %v", err)
 	}
 }

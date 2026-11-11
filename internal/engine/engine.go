@@ -233,6 +233,9 @@ type Engine struct {
 	deliveryErrLog  io.Writer
 	lastDeliveryErr string
 	lastChannelsErr string
+	// afterOutboxRead, when set (tests), runs between a retry sweep's read of
+	// the outbox and its claim, which is where a concurrent send can settle.
+	afterOutboxRead func()
 	// alerts holds the in-memory notification episodes: provider pauses
 	// (see alerts.go). Failure streaks are kept on disk instead.
 	alerts alerts

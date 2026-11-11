@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -48,6 +49,13 @@ func Permanent(err error) bool {
 	return se.Code/100 == 4 && se.Code != http.StatusRequestTimeout && se.Code != http.StatusTooManyRequests
 }
 
+// Refused reports whether err is the channel's answer refusing the message,
+// as opposed to the message not reaching it (no network, a timeout).
+func Refused(err error) bool {
+	var se *StatusError
+	return errors.As(err, &se)
+}
+
 // post sends one request to a channel's endpoint and turns a non-2xx reply into
 // a [StatusError] naming the channel and quoting its reason, so a channel that
 // stops accepting notifications says why in the daemon's log instead of failing
@@ -69,7 +77,14 @@ func post(ctx context.Context, client *http.Client, channel, endpoint, contentTy
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("%s request: %w", channel, err)
+		// The client's error quotes the whole URL, and for a Slack or Discord
+		// webhook the URL is the secret. It is logged and kept in the outbox,
+		// so only the host is named.
+		var ue *url.Error
+		if errors.As(err, &ue) {
+			err = ue.Err
+		}
+		return nil, fmt.Errorf("%s request to %s: %w", channel, req.URL.Host, err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode/100 != 2 {

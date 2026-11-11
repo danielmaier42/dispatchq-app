@@ -217,6 +217,21 @@ describe('full CLI parity on cards', () => {
 })
 
 describe('update semantics follow dispatchq edit', () => {
+  it("replaces a file job's source file with the new prompt", async () => {
+    api.post.mockResolvedValueOnce(
+      reply({actions: [{type: 'update_task', id: 't1', task: {prompt: 'new text'}}]}),
+    )
+    await say('rewrite its prompt')
+    const entry = useAssistant.getState().entries.at(-1)!
+    api.get.mockResolvedValueOnce([
+      {id: 't1', name: 'T', prompt: '', source_file: '/briefs/t.md', trigger: 'asap', permissions: 'default'},
+    ])
+    api.put.mockResolvedValueOnce({})
+    await confirmCard(entry.id, 0, entry.cards![0])
+    const body = api.put.mock.calls[0][1]
+    expect(body).toMatchObject({prompt: 'new text'})
+    expect(body).not.toHaveProperty('source_file')
+  })
   it('drops the old model when the provider changes and clears what the draft names', async () => {
     api.post.mockResolvedValueOnce(
       reply({actions: [{type: 'update_task', id: 't1', task: {provider: 'codex', clear: ['group']}}]}),

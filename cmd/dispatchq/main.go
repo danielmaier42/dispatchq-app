@@ -529,7 +529,7 @@ func buildQueuedTask(parentJSON, id string, o queueOpts, now time.Time) (task.Ta
 
 	// Explicit overrides win over inheritance, e.g. a cheap watcher queueing a
 	// review that must run on a stronger model with a visible run.
-	if o.prompt != "" && o.has("source-file") {
+	if o.prompt != "" && o.sourceFile != "" {
 		return task.Task{}, fmt.Errorf("choose either --prompt or --source-file")
 	}
 	o.apply(&t, o.has)

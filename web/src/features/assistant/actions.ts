@@ -75,6 +75,8 @@ function merged(t: QueueTask, d: AssistantTaskDraft): QueueTask {
   Object.assign(next, draftInput(d))
   if (d.provider) delete next.pool
   if (d.pool) delete next.provider
+  // New text replaces a file the job read from, as on the daemon's side.
+  if (d.prompt) delete next.source_file
   if (d.kind === 'script') {
     delete next.provider
     delete next.pool

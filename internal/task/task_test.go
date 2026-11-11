@@ -319,7 +319,7 @@ func TestReadSource(t *testing.T) {
 		"missing":  {filepath.Join(dir, "gone.sh"), "script file " + filepath.Join(dir, "gone.sh") + " does not exist"},
 		"empty":    {write("empty.sh", " \n"), "is empty"},
 		"too big":  {write("big.sh", strings.Repeat("x", MaxSourceFileSize+1)), "is larger than"},
-		"a folder": {dir, "read script file"},
+		"a folder": {dir, "is not a regular file"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			s := script

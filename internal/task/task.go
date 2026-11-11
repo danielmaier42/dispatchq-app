@@ -285,8 +285,9 @@ func (t Task) checkSource() error {
 
 // MaxSourceFileSize is the largest prompt or script file a run reads. A
 // prompt file is prose and a script file a program; anything this large is
-// almost certainly the wrong file, and it would not fit on a command line
-// anyway.
+// almost certainly the wrong file. It is a sanity bound, not the command-line
+// limit: a prompt passed as an argument still has to fit the system's, exactly
+// as an inline one does.
 const MaxSourceFileSize = 1 << 20
 
 // ReadSource returns the text this run executes: the inline prompt, or the
@@ -296,11 +297,20 @@ func (t Task) ReadSource() (string, error) {
 	if t.SourceFile == "" {
 		return t.Prompt, nil
 	}
-	f, err := os.Open(t.SourceFile)
+	// Only a regular file is opened: opening a named pipe would block until
+	// something writes to it, and the read happens while the scheduler waits.
+	info, err := os.Stat(t.SourceFile)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return "", fmt.Errorf("%s file %s does not exist", t.noun(), t.SourceFile)
 		}
+		return "", fmt.Errorf("read %s file: %w", t.noun(), err)
+	}
+	if !info.Mode().IsRegular() {
+		return "", fmt.Errorf("%s file %s is not a regular file", t.noun(), t.SourceFile)
+	}
+	f, err := os.Open(t.SourceFile)
+	if err != nil {
 		return "", fmt.Errorf("read %s file: %w", t.noun(), err)
 	}
 	defer func() { _ = f.Close() }()

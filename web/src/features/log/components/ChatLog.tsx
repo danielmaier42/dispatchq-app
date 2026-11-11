@@ -28,7 +28,9 @@ export function ChatLog({
   const last = entries.length - 1
   return (
     <div className="mx-auto flex max-w-[820px] flex-col gap-3">
-      {prompt.trim() && <UserMessage who="You" text={prompt} title={promptTitle} source={promptSource} />}
+      {(prompt.trim() || promptSource) && (
+        <UserMessage who="You" text={prompt} title={promptTitle} source={promptSource} />
+      )}
       {entries.map((e, i) => {
         switch (e.kind) {
           case 'message':
@@ -99,11 +101,13 @@ function UserMessage({
           read from {source}
         </p>
       )}
-      <Expandable long={isLong(text)}>
-        <RichText text={text} />
-      </Expandable>
+      {text.trim() && (
+        <Expandable long={isLong(text)}>
+          <RichText text={text} />
+        </Expandable>
+      )}
       <CopyButton
-        text={text}
+        text={text || source || ''}
         label="Copy"
         className="absolute top-1.5 right-1.5 opacity-0 group-hover/msg:opacity-100 focus-visible:opacity-100"
       />

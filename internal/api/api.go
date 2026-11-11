@@ -498,6 +498,7 @@ func (s *server) addTask(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	t.SourceFile = strings.TrimSpace(t.SourceFile)
 	if t.Permissions == "" {
 		t.Permissions = task.PermissionsDefault
 	}
@@ -620,6 +621,7 @@ func (s *server) updateTask(w http.ResponseWriter, r *http.Request) {
 		}
 		t.OriginID, t.OriginName = prev.OriginID, prev.OriginName
 	}
+	t.SourceFile = strings.TrimSpace(t.SourceFile)
 	if t.Permissions == "" {
 		t.Permissions = task.PermissionsDefault
 	}

@@ -296,3 +296,16 @@ func TestRetireTaskRecordsAnOwedRemoval(t *testing.T) {
 		t.Fatal("the failed removal is not recorded as owed")
 	}
 }
+
+// The review finding: a limit on the continuation replaced its mark, so the
+// "once" could repeat. A pause keeps the record that the one more go is spent,
+// whatever session id the harness reports, but is an ordinary limit resume.
+func TestALimitKeepsTheSpentContinuation(t *testing.T) {
+	st := newState()
+	st.SetInterruptedResume("a", "sess", "claude", "run-1")
+	st.SetPendingResume("a", "sess-forked", "claude")
+	p, _ := st.PendingResume("a")
+	if p.InterruptedRun != "run-1" || p.AfterInterrupt || p.SessionID != "sess-forked" {
+		t.Fatalf("pending after a limit = %+v, want a limit resume that keeps run-1 as spent", p)
+	}
+}

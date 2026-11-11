@@ -14,34 +14,50 @@ import (
 	"github.com/danielmaier42/claudeq/internal/system"
 )
 
-// Notification is a single message to deliver.
+// Notification is a single message to deliver. It is kept on disk while a
+// channel still has to deliver it (the daemon's delivery outbox), hence the
+// JSON names.
 type Notification struct {
-	Title   string
-	Message string
+	Title   string `json:"title"`
+	Message string `json:"message"`
 	// ID names the notification in the daemon's inbox (store.InboxEntry). The
 	// macOS notification carries it so a click can mark that entry read (see
 	// cmd/dispatchqapp, notifyclick_cocoa.m); other channels ignore it.
-	ID string
+	ID string `json:"id,omitempty"`
 	// Kind says what the notification announces (a store.InboxKind constant).
 	// It is bookkeeping for the inbox, not something a channel shows.
-	Kind string
+	Kind string `json:"kind,omitempty"`
 	// ArtifactID, when set, makes the macOS notification open that artifact in
 	// the DispatchQ window on click. Channels that cannot carry a click target
 	// ignore it.
-	ArtifactID string
+	ArtifactID string `json:"artifact_id,omitempty"`
 	// RunID, when set, makes the macOS notification open that run's log in the
 	// DispatchQ window on click. Channels that cannot carry a click target ignore
 	// it.
-	RunID string
+	RunID string `json:"run_id,omitempty"`
 	// URL, when set, is the notification's link: Pushover shows it as the
 	// message's supplementary URL, and clicking the macOS notification opens it
 	// (again via cmd/dispatchqapp). Channels that cannot carry a link ignore it.
-	URL string
+	URL string `json:"url,omitempty"`
 	// TaskID and TaskName attribute the notification to the task it is about
 	// or that sent it, for the inbox. Channels ignore them.
-	TaskID   string
-	TaskName string
+	TaskID   string `json:"task_id,omitempty"`
+	TaskName string `json:"task_name,omitempty"`
+	// Priority asks the phone channels to make more noise: Pushover sends it
+	// as priority 1 (bypasses quiet hours), ntfy as "high". Channels without
+	// priorities ignore it.
+	Priority Priority `json:"priority,omitempty"`
 }
+
+// Priority is how urgently a notification asks to be noticed.
+type Priority int
+
+const (
+	// PriorityNormal is every notification that is not about something broken.
+	PriorityNormal Priority = 0
+	// PriorityHigh is for a failure: something stopped working unattended.
+	PriorityHigh Priority = 1
+)
 
 // IsWebURL reports whether s is an absolute http or https URL — the only kind
 // of link a notification carries, because it is opened on click without
@@ -154,8 +170,16 @@ func ValidatePushover(token, userKey string) error {
 
 // Notify posts the message to Pushover.
 func (p Pushover) Notify(ctx context.Context, n Notification) error {
+	_, err := p.Deliver(ctx, n)
+	return err
+}
+
+// Deliver posts the message to Pushover and returns the request id Pushover
+// answered with, which is what its support asks for when a message went
+// missing on the way to the phone.
+func (p Pushover) Deliver(ctx context.Context, n Notification) (string, error) {
 	if !p.Configured() {
-		return fmt.Errorf("pushover not configured")
+		return "", fmt.Errorf("pushover not configured")
 	}
 	endpoint := p.URL
 	if endpoint == "" {
@@ -170,7 +194,50 @@ func (p Pushover) Notify(ctx context.Context, n Notification) error {
 	if n.URL != "" {
 		form.Set("url", n.URL)
 	}
-	return post(ctx, p.Client, "pushover", endpoint, "application/x-www-form-urlencoded", form.Encode(), nil)
+	if n.Priority == PriorityHigh {
+		form.Set("priority", "1")
+	}
+	reply, err := post(ctx, p.Client, "pushover", endpoint, "application/x-www-form-urlencoded", form.Encode(), nil)
+	return receiptField(reply, "request"), err
+}
+
+// Deliverer is a notifier that reports what the channel answered: the id the
+// service gave the message, empty when it gives none. The daemon logs it for
+// every accepted notification, so "it never arrived" can be told apart from
+// "it was accepted and lost on the way".
+type Deliverer interface {
+	Deliver(ctx context.Context, n Notification) (string, error)
+}
+
+// Deliver sends n through notifier and returns its receipt when the notifier
+// reports one.
+func Deliver(ctx context.Context, notifier Notifier, n Notification) (string, error) {
+	if d, ok := notifier.(Deliverer); ok {
+		return d.Deliver(ctx, n)
+	}
+	return "", notifier.Notify(ctx, n)
+}
+
+// Channel is one named way out: the desktop, Pushover, ntfy or the webhook.
+// The daemon delivers to and retries each channel on its own, so a phone that
+// was offline gets the message later without the desktop showing it twice.
+type Channel struct {
+	// Name identifies the channel across a daemon restart ("desktop",
+	// "pushover", "ntfy", "webhook").
+	Name string
+	// Remote is set for a channel that needs the network. It is retried for
+	// much longer than the desktop, whose banner is stale after an hour.
+	Remote   bool
+	Notifier Notifier
+}
+
+// Channels names each channel a notifier fans out to right now. A notifier
+// that does not implement it counts as a single channel. An error means the
+// channels cannot be told (the settings did not load); the channels that are
+// known still come back, and nothing waiting for another channel may be
+// dropped because of it.
+type Channels interface {
+	Channels() ([]Channel, error)
 }
 
 // Multi fans a notification out to several notifiers, best-effort: it attempts

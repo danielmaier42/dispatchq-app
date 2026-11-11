@@ -3,6 +3,7 @@ import {
   ChevronRight,
   CircleCheck,
   CircleX,
+  Clock,
   Eye,
   FileText,
   MessageSquareText,
@@ -24,6 +25,7 @@ const KIND_LOOK: Record<string, {icon: LucideIcon; tone: string}> = {
   artifact: {icon: FileText, tone: 'bg-accent-soft text-accent-text'},
   provider: {icon: TriangleAlert, tone: 'bg-warning-soft text-warning'},
   task: {icon: MessageSquareText, tone: 'bg-info-soft text-info'},
+  waiting: {icon: Clock, tone: 'bg-warning-soft text-warning'},
 }
 const OTHER = {icon: Bell, tone: 'bg-surface-3 text-muted-foreground'}
 

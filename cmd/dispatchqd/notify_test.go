@@ -20,8 +20,8 @@ func TestNotifyChannelsAlwaysIncludesTheDesktop(t *testing.T) {
 	if len(channels) != 1 {
 		t.Fatalf("channels = %+v, want just the desktop", channels)
 	}
-	if _, ok := channels[0].(desktopStub); !ok {
-		t.Fatalf("channels[0] = %T, want the desktop channel", channels[0])
+	if _, ok := channels[0].Notifier.(desktopStub); !ok || channels[0].Name != "desktop" || channels[0].Remote {
+		t.Fatalf("channels[0] = %+v, want the local desktop channel", channels[0])
 	}
 }
 
@@ -34,8 +34,8 @@ func TestNotifyChannelsWithoutADesktopKeepsTheRemoteChannels(t *testing.T) {
 	if len(channels) != 1 {
 		t.Fatalf("channels = %+v, want only ntfy", channels)
 	}
-	if _, ok := channels[0].(notify.Ntfy); !ok {
-		t.Fatalf("channels[0] = %T, want notify.Ntfy", channels[0])
+	if _, ok := channels[0].Notifier.(notify.Ntfy); !ok || channels[0].Name != "ntfy" || !channels[0].Remote {
+		t.Fatalf("channels[0] = %+v, want the remote ntfy channel", channels[0])
 	}
 }
 
@@ -65,7 +65,7 @@ func TestNotifyChannelsIncludesEveryConfiguredEnabledChannel(t *testing.T) {
 	}
 	var sawPushover, sawNtfy, sawWebhook bool
 	for _, c := range channels {
-		switch c.(type) {
+		switch c.Notifier.(type) {
 		case notify.Pushover:
 			sawPushover = true
 		case notify.Ntfy:

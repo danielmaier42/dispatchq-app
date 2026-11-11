@@ -2199,7 +2199,7 @@ environment variable):
 | `notifications.json` | Outbox of notifications sent with `dispatchq notify`, waiting for the daemon to deliver them (normally empty). |
 | `inbox.json` | The last 1000 notifications the daemon sent (title, message, kind, what each points at, read flag), as listed in the Notifications view. An unread failure notification is kept until it is read, however old. |
 | `state.json` | Machine bookkeeping: read/unread flags (runs and artifacts), which artifacts have been notified about, cron anchors, pending-resume sessions, the process of each run in flight (so a restarted daemon can take it back), the provider health you were last told about, the latest credit proof of each API-key account (ping or run, answered or refused), which queue groups are folded shut, dismissed update version, the What's new edition you closed, whether the check for tasks that still use the 1.x names is done. |
-| `dispatchqd.out.log` / `dispatchqd.err.log` | Daemon stdout/stderr on macOS; on Windows the daemon log is `dispatchqd.log`. |
+| `dispatchqd.out.log` / `dispatchqd.err.log` | Daemon stdout/stderr on macOS; on Windows the daemon log is `dispatchqd.log`. Every line starts with its local time (RFC 3339, e.g. `2026-11-11T17:05:09+01:00`). |
 | `../claudeq` | After an update from a 1.x version: a link from the old data folder to this one. |
 | `.lock` / `.daemon.lock` | Lock files, both empty of interest. `.lock` serializes config/state writes between the daemon and a `dispatchq` command; `.daemon.lock` holds the running daemon's pid and is what makes a second daemon on the same store refuse to start. Both are released when the holding process exits, so neither needs clearing by hand. |
 

@@ -63,6 +63,12 @@ const daemonLockWait = engine.ShutdownGrace + 20*time.Second
 
 func main() {
 	platformInit(os.Args[1:])
+	// Only the daemon's own log is stamped; the other commands print to a
+	// terminal or to an installer that reads their output as it is.
+	flush := func() {}
+	if len(os.Args) > 1 && os.Args[1] == "run" {
+		flush = stampStdio(time.Now)
+	}
 	if err := run(os.Args[1:]); err != nil {
 		var refused errClientRefused
 		if errors.As(err, &refused) {
@@ -71,8 +77,10 @@ func main() {
 		} else {
 			fmt.Fprintln(os.Stderr, "dispatchqd:", err)
 		}
+		flush()
 		os.Exit(exitCode(err))
 	}
+	flush()
 }
 
 // exitWebView2Missing is the exit code of webview2-status when the window

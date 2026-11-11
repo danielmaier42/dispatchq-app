@@ -393,11 +393,23 @@ func (s *Store) BackfillLastRuns() (int, error) {
 	return n, nil
 }
 
-// PruneHistory keeps only the most recent `limit` runs: it compacts
-// history.jsonl to one latest event per kept run and deletes the log files of
-// the dropped runs. limit <= 0 keeps everything. Quiet runs neither count
-// against the limit nor are dropped by it: PruneQuietRuns bounds them, so a
-// watcher's ticks never push a real run out of the record.
+// PruneHistory keeps the most recent `limit` runs: it compacts history.jsonl
+// to one latest event per kept run and deletes the log files of the dropped
+// runs. limit <= 0 keeps everything. Quiet runs neither count against the
+// limit nor are dropped by it: PruneQuietRuns bounds them, so a watcher's
+// ticks never push a real run out of the record.
+//
+// An older run is kept past the limit while it is unread and did not succeed
+// (failed, auth error, canceled, interrupted, still waiting on a rate limit):
+// that is an outcome nobody has looked at yet, and scripts that read
+// history.jsonl for outcomes would lose it. It goes once it is read. A run
+// still in flight (running, or waiting to resume) is kept whether read or
+// not: its log is still being written.
+//
+// Pruning works in batches: nothing is rewritten until more than a tenth of
+// the limit could be dropped, and then history goes back down to the limit.
+// With thousands of runs the file runs to megabytes, and rewriting it after
+// every single run would cost a full write per run for one dropped line.
 func (s *Store) PruneHistory(limit int) error {
 	if limit <= 0 {
 		return nil
@@ -415,13 +427,26 @@ func (s *Store) PruneHistory(limit int) error {
 			counted = append(counted, id)
 		}
 	}
-	if len(counted) <= limit {
+
+	slack := pruneSlack(limit)
+	if len(counted)-limit <= slack {
 		return nil
 	}
-	drop := counted[:len(counted)-limit]
-	dropped := make(map[string]bool, len(drop))
-	for _, id := range drop {
+	st, err := s.loadStateLocked()
+	if err != nil {
+		return fmt.Errorf("prune history: %w", err)
+	}
+	var drop []string
+	dropped := map[string]bool{}
+	for _, id := range counted[:len(counted)-limit] {
+		if r := latest[id]; !r.Status.Terminal() || (r.Status != StatusSuccess && !st.IsRead(id)) {
+			continue
+		}
+		drop = append(drop, id)
 		dropped[id] = true
+	}
+	if len(drop) <= slack {
+		return nil
 	}
 	keep := make([]string, 0, len(order)-len(drop))
 	for _, id := range order {
@@ -452,11 +477,19 @@ func (s *Store) PruneHistory(limit int) error {
 	return nil
 }
 
+// pruneSlack is how many runs past the limit PruneHistory lets accumulate
+// before it rewrites history: a tenth of the limit.
+func pruneSlack(limit int) int { return limit / 10 }
+
 // LoadState reads state.json. A missing file yields a ready-to-use zero State.
 func (s *Store) LoadState() (*State, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.loadStateLocked()
+}
 
+// loadStateLocked is LoadState for a caller that already holds s.mu.
+func (s *Store) loadStateLocked() (*State, error) {
 	data, err := os.ReadFile(s.path(stateFile))
 	if errors.Is(err, os.ErrNotExist) {
 		return newState(), nil
@@ -725,7 +758,8 @@ type Settings struct {
 	// so it is not affected. 0 = use the default; negative = never kill.
 	IdleTimeoutMinutes int `toml:"idle_timeout_minutes" json:"idle_timeout_minutes"`
 	// MaxRunHistory caps how many runs are kept; older runs (and their log files)
-	// are pruned. 0 = use the default; negative = keep everything.
+	// are pruned, except unread runs that did not succeed (see PruneHistory).
+	// 0 = use the default; negative = keep everything.
 	MaxRunHistory int `toml:"max_run_history" json:"max_run_history"`
 	// SystemPrompt is the operator's custom system prompt, appended to dispatchq's
 	// built-in one on every run (built-in first, this last). Empty means none.
@@ -882,8 +916,9 @@ func (s Settings) IdleTimeout() time.Duration {
 	return time.Duration(m) * time.Minute
 }
 
-// DefaultMaxRunHistory is the retained-run count when unset.
-const DefaultMaxRunHistory = 500
+// DefaultMaxRunHistory is the retained-run count when unset: about a month of
+// a queue that finishes a hundred runs a day.
+const DefaultMaxRunHistory = 3000
 
 // RunHistoryLimit returns how many runs to keep, or 0 for unlimited. Unset (0)
 // uses the default; a negative setting keeps everything.

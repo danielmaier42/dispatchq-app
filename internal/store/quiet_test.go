@@ -106,7 +106,7 @@ func TestPruneHistoryDoesNotCountQuietRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 	at := time.Now()
-	appendRun(t, s, Run{RunID: "a", TaskID: "real", StartedAt: at, Status: StatusFailed})
+	appendRun(t, s, Run{RunID: "a", TaskID: "real", StartedAt: at, Status: StatusSuccess})
 	appendRun(t, s, Run{RunID: "q1", TaskID: "watch", StartedAt: at, Status: StatusSuccess, Quiet: true})
 	appendRun(t, s, Run{RunID: "b", TaskID: "real", StartedAt: at, Status: StatusSuccess})
 	appendRun(t, s, Run{RunID: "q2", TaskID: "watch", StartedAt: at, Status: StatusSuccess, Quiet: true})

@@ -53,9 +53,10 @@ const (
 )
 
 // InboxLimit is how many notifications the inbox keeps; the oldest make room
-// for new ones. Two hundred is weeks of a busy queue, and a notification older
-// than that has nothing left to say.
-const InboxLimit = 200
+// for new ones. A thousand is about a month of a busy queue that notifies on
+// its failures and artifacts. An unread failure is kept past the limit (see
+// AddInboxEntry): it is the one notification that still asks for a look.
+const InboxLimit = 1000
 
 const inboxFile = "inbox.json"
 
@@ -71,7 +72,8 @@ func (s *Store) Inbox() ([]InboxEntry, error) {
 }
 
 // AddInboxEntry appends e to the inbox, dropping the oldest entries beyond
-// InboxLimit.
+// InboxLimit. Unread failures are never dropped; they leave once read and
+// pushed out by newer entries.
 func (s *Store) AddInboxEntry(e InboxEntry) error {
 	if e.ID == "" {
 		return fmt.Errorf("add inbox entry: missing id")
@@ -82,12 +84,27 @@ func (s *Store) AddInboxEntry(e InboxEntry) error {
 				return fmt.Errorf("notification %q already in the inbox", e.ID)
 			}
 		}
-		*list = append(*list, e)
-		if extra := len(*list) - InboxLimit; extra > 0 {
-			*list = (*list)[extra:]
-		}
+		*list = trimInbox(append(*list, e), InboxLimit)
 		return nil
 	})
+}
+
+// trimInbox drops the oldest entries of list until at most limit remain,
+// skipping unread failures, which stay however many there are.
+func trimInbox(list []InboxEntry, limit int) []InboxEntry {
+	extra := len(list) - limit
+	if extra <= 0 {
+		return list
+	}
+	kept := list[:0]
+	for _, q := range list {
+		if extra > 0 && (q.Read || q.Kind != InboxKindFailure) {
+			extra--
+			continue
+		}
+		kept = append(kept, q)
+	}
+	return kept
 }
 
 // UpdateInbox atomically applies fn to the inbox, serialized with other

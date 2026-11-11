@@ -467,7 +467,8 @@ explains it.
   not woken from sleep.
 - **File-access prompts up front.** Task folders are read at login and on
   edit, so macOS asks for Documents access while you are present.
-- **Bounded history.** Old runs are pruned to a configurable count.
+- **Bounded history.** Old runs are pruned to a configurable count; an unread
+  failure stays until you have read it.
 
 **Seeing what happened**
 
@@ -733,7 +734,8 @@ first. The window opens on the Dashboard:
   task or kind), **All | Unread**, and **Filter** with the **kind** (run
   succeeded, run failed, new artifact, provider, from a task), shown as a
   removable chip once set. The daemon keeps the last
-  200 notifications; older ones make room. Notifications macOS is set to hide
+  1000 notifications; older ones make room, except an unread run failure,
+  which stays until you have read it. Notifications macOS is set to hide
   still arrive here, so nothing is lost while the banner is off.
 - **Usage** — tokens, runs and cost for the period chosen in the header: 7, 14
   (the default), 30 or 90 days, or All. A bar chart per day (per week beyond 45
@@ -785,7 +787,7 @@ in the list, and leaving Settings keeps the draft for the session.
 | | Accent colour | System, a preset, or your own | *System* follows the accent colour set in macOS, live. A preset or the colour picker pins another one for buttons, selections and highlights; text on it switches between white and black so it stays readable. Stored as `accent` (`#rrggbb`, empty = follow macOS). |
 | **Execution** | Global pause | Pause all runs | Global stop switch: nothing starts while it is on, not even *Run now*; a run already in flight keeps going. |
 | | Runs | Stop a run with no output for | Idle-timeout watchdog: kills a hung run (default 30 min; a working run keeps streaming and is unaffected; Off disables it). |
-| | | Keep run history | How many runs (and their logs) to retain before pruning (default 500; Unlimited keeps everything). The hidden successes of quiet-history tasks do not count; they have their own retention (see [Quiet history](#quiet-history-for-frequent-jobs)). |
+| | | Keep run history | How many runs (and their logs) to retain before pruning (default 3000; Unlimited keeps everything). An unread run that did not succeed (failed, auth error, canceled, interrupted, waiting on a rate limit) is kept past the limit until you read it. Pruning runs in batches: history may grow a tenth past the limit before it is cut back to it. The hidden successes of quiet-history tasks do not count; they have their own retention (see [Quiet history](#quiet-history-for-frequent-jobs)). |
 | | Scheduler | Check for due tasks every | How often the daemon wakes to look for work (15 min – 6 h; also the wake safety-net interval). |
 | **Notifications** | On this computer | Keep alerts on screen | Opens System Settings → Notifications, where DispatchQ's alert style lives: *Banners* disappear on their own, *Alerts* stay until you click them. A warning sits on top while macOS hides DispatchQ's notifications. |
 | | | Notify about new artifacts | On by default; the same switch sits as **Notify me** in the Artifacts toolbar. Off: a published artifact still lands in Artifacts, but raises no notification on any channel and no entry in Notifications. Switching it back on does not announce what was published in the meantime. |
@@ -2203,14 +2205,14 @@ environment variable):
 | Path | Contents |
 |------|----------|
 | `config.toml` | Global settings, the configured [providers](#providers) and [pools](#provider-pools), and the ordered task list — the order is the priority, and tasks of one group sit together in it (human-readable, versionable). No credentials: a provider entry holds its CLI's path and configuration directory, never what is inside them. |
-| `history.jsonl` | Append-only index of every run. A quiet-history task's successful runs carry `"quiet": true` and are dropped after 48 hours (at most 200 per task are kept). Scripts read it through `dispatchq status --all --json`, which leaves those out unless `--hidden` is given. |
+| `history.jsonl` | Append-only index of every run, pruned to *Keep run history*; unread runs that did not succeed are never pruned. A quiet-history task's successful runs carry `"quiet": true` and are dropped after 48 hours (at most 200 per task are kept). Scripts read it through `dispatchq status --all --json`, which leaves those out unless `--hidden` is given. |
 | `runs/<run-id>.log` | Full log for each run; a hidden run's log is deleted with it. |
 | `artifacts.json` | Index of published artifacts (title, source task/run, its group and parent job, file name, size, type). |
 | `artifacts/<id>/<file>` | The published files themselves (snapshots copied at publish time). |
 | `notifications.json` | Outbox of notifications sent with `dispatchq notify`, waiting for the daemon to deliver them (normally empty). |
-| `inbox.json` | The last 200 notifications the daemon sent (title, message, kind, what each points at, read flag), as listed in the Notifications view. |
+| `inbox.json` | The last 1000 notifications the daemon sent (title, message, kind, what each points at, read flag), as listed in the Notifications view. An unread failure notification is kept until it is read, however old. |
 | `state.json` | Machine bookkeeping: read/unread flags (runs and artifacts), which artifacts have been notified about, cron anchors, pending-resume sessions, the process of each run in flight (so a restarted daemon can take it back), the provider health you were last told about, the latest credit proof of each API-key account (ping or run, answered or refused), which queue groups are folded shut, dismissed update version, the What's new edition you closed, whether the check for tasks that still use the 1.x names is done. |
-| `dispatchqd.out.log` / `dispatchqd.err.log` | Daemon stdout/stderr on macOS; on Windows the daemon log is `dispatchqd.log`. |
+| `dispatchqd.out.log` / `dispatchqd.err.log` | Daemon stdout/stderr on macOS; on Windows the daemon log is `dispatchqd.log`. Every line the daemon prints starts with its local time (RFC 3339, e.g. `2026-11-11T17:05:09+01:00`); a Go crash trace is written as it is. |
 | `../claudeq` | After an update from a 1.x version: a link from the old data folder to this one. |
 | `.lock` / `.daemon.lock` | Lock files, both empty of interest. `.lock` serializes config/state writes between the daemon and a `dispatchq` command; `.daemon.lock` holds the running daemon's pid and is what makes a second daemon on the same store refuse to start. Both are released when the holding process exits, so neither needs clearing by hand. |
 

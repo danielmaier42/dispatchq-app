@@ -1039,6 +1039,9 @@ func (e *Engine) launchTask(t task.Task, settings store.Settings, resolved provi
 	// continuation asks for what is missing instead.
 	if resume == continueInterrupted && !t.IsScript() {
 		prompted.Prompt = interruptedContinuationPrompt
+		// The job's own text is not sent again, so a source file that has
+		// gone since is no reason to fail the continuation.
+		sourceErr = nil
 		writeNote(logFile, "Continuing the session DispatchQ cut off; the model is asked to finish only what is missing.")
 	}
 

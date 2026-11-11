@@ -4,6 +4,7 @@ package engine
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -282,5 +283,26 @@ func TestNoContinuationForAOneShotAlreadyCompleted(t *testing.T) {
 	}
 	if cfg, _ := st.LoadConfig(); len(cfg.Tasks) != 0 {
 		t.Fatal("the completed one-shot is still queued")
+	}
+}
+
+// A continuation sends no prompt of its own, so a job whose source file has
+// gone since the cut-off still finishes its session instead of failing.
+func TestContinuationNeedsNoSourceFile(t *testing.T) {
+	job, path := fileJob(t, "from-file", "", "Do the long job.\n")
+	e, _, second := diedUnder(t, job)
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := e.Recover(); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	e.WaitIdle()
+	reqs := second.requests()
+	if len(reqs) != 1 || !reqs[0].Resume || reqs[0].Task.Prompt != interruptedContinuationPrompt {
+		t.Fatalf("runs after the restart = %+v, want the continuation despite the missing file", reqs)
 	}
 }

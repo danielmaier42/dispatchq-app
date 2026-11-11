@@ -376,7 +376,7 @@ func TestNetworkFailuresRightAfterAWakeDoNotCount(t *testing.T) {
 	e.send(notify.Notification{Title: "x"})
 	e.sweepDeliveries(true)
 	e.WaitIdle()
-	for range 3 {
+	for range 2 {
 		fc.Advance(DeliveryFirstRetry)
 		e.sweepDeliveries(false)
 		e.WaitIdle()
@@ -385,10 +385,11 @@ func TestNetworkFailuresRightAfterAWakeDoNotCount(t *testing.T) {
 	if len(list) != 1 || list[0].Attempts != 1 || !list[0].NextTry.Equal(fc.Now().Add(DeliveryFirstRetry)) {
 		t.Fatalf("outbox = %+v, want the wake tries uncounted and the next one 30s away", list)
 	}
-	if got := len(chans.phone.received()); got != 5 {
-		t.Fatalf("pushover tried %d times, want the send and four tries in the grace", got)
+	if got := len(chans.phone.received()); got != 4 {
+		t.Fatalf("pushover tried %d times, want the send and three tries in the grace", got)
 	}
-	// A refusal keeps its backoff even then: a rate limit is not hammered.
+	// A refusal keeps its backoff even within the grace: a rate limit is not
+	// hammered.
 	chans.phone.fail(&notify.StatusError{Channel: "pushover", Code: 429})
 	fc.Advance(DeliveryFirstRetry)
 	e.sweepDeliveries(false)

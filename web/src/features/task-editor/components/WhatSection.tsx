@@ -6,6 +6,7 @@ import type {TaskKind, TaskSource} from '@/lib/types'
 import type {FieldErrors, TaskForm} from '../form'
 import {PromptReview} from '../review/PromptReview'
 import {GroupCombobox} from './GroupCombobox'
+import {SourceFileField} from './SourceFileField'
 import {EditorSection} from './parts'
 
 const mono = 'font-mono text-[12.5px]'
@@ -141,23 +142,12 @@ export function PromptSection({
         </p>
       )}
       {fromFile ? (
-        <Field
-          label={script ? 'Script file' : 'Prompt file'}
-          htmlFor="te-sourceFile"
+        <SourceFileField
+          kind={form.kind}
+          value={form.sourceFile}
           error={errors.sourceFile}
-          hint={`Read at the start of every run, so edits to the file apply to the next run. If the file is missing then, the run fails and says so.`}
-        >
-          <Input
-            id="te-sourceFile"
-            value={form.sourceFile}
-            aria-invalid={!!errors.sourceFile}
-            placeholder={script ? '/Users/me/scripts/watch.sh' : '/Users/me/briefs/nightly.md'}
-            spellCheck={false}
-            autoComplete="off"
-            className={mono}
-            onChange={(e) => update({sourceFile: e.target.value})}
-          />
-        </Field>
+          onChange={(sourceFile) => update({sourceFile})}
+        />
       ) : (
         <>
           <Field htmlFor="te-prompt" error={errors.prompt}>

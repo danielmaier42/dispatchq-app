@@ -355,8 +355,8 @@ Windows on ARM hardware (see [docs/windows/PLAN.md](docs/windows/PLAN.md) for th
    drafts it and you confirm it on its card (see [Asking DispatchQ](#asking-dispatchq)).
    Or open the task form with the **+** next to it (**⌘N**) — give it a prompt, choose the **job type** (*Agent*, the
    default, or *Script* — see [Script jobs](#script-jobs)), write the prompt or script
-   *Inline* or switch it to *File* and give the path of a file it is read from on every
-   run (see [Inline or from a file](#inline-or-from-a-file)), pick the working folder (prefilled from
+   *Inline* or switch it to *File* and pick the file it is read from on every run with
+   **Choose…** (see [Inline or from a file](#inline-or-from-a-file)), pick the working folder (prefilled from
    **Settings → General → Default working directory**, if you set one), and choose a trigger
    (as-soon-as-possible, earliest start, or cron; a cron schedule is validated as
    you type, with a preview of its next three runs). Optionally pick the provider
@@ -1824,7 +1824,10 @@ Both kinds of job can hold their text in one of two places, picked with the
 
 - **Inline** — the default — keeps the text in the task, in `config.toml`. What
   the task says is what runs, until you edit the task.
-- **File** keeps only an **absolute path**. The job reads that file at the
+- **File** keeps only an **absolute path**: pick the file with **Choose…**,
+  which opens the system's file dialog (macOS: the Finder panel; Windows: the
+  Open dialog) in the folder of the file already set, or type the path. The job
+  reads that file at the
   start of **every run**, so it always runs what the file says *now*: edit a
   watcher script or a long brief in your own editor or repository, and the next
   run picks it up without touching the queue. A prompt file is sent to the model

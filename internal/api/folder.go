@@ -25,6 +25,24 @@ func OSAScriptFolderChooser(r system.Runner) FolderChooser {
 	}
 }
 
+// OSAScriptFileChooser returns a FileChooser that opens the native macOS "open
+// file" panel via `osascript`. Like `choose folder`, `choose file` shows
+// nothing when its default location is gone, so it starts at the nearest
+// existing folder of start. The prompt and that folder reach the AppleScript
+// as run arguments, so they need no AppleScript string escaping.
+func OSAScriptFileChooser(r system.Runner) FileChooser {
+	return func(ctx context.Context, prompt, start string) (string, bool, error) {
+		return chooseWithOSAScript(ctx, r, "choose file",
+			"-e", "on run argv",
+			"-e", `if (item 2 of argv) is "" then`,
+			"-e", "return POSIX path of (choose file with prompt (item 1 of argv))",
+			"-e", "end if",
+			"-e", "return POSIX path of (choose file with prompt (item 1 of argv) default location (POSIX file (item 2 of argv)))",
+			"-e", "end run",
+			prompt, existingDir(start))
+	}
+}
+
 // OSAScriptSaveFileDialog returns a SaveFileDialog that opens the native macOS
 // "Save as" panel via `osascript`. The panel itself asks before replacing an
 // existing file. The prompt and default name reach the AppleScript as run

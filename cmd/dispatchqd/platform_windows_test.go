@@ -20,6 +20,7 @@ func TestWindowsPlatformServices(t *testing.T) {
 		"service":           p.service != nil,
 		"sleep":             p.sleep != nil,
 		"chooseFolder":      p.chooseFolder != nil,
+		"chooseFile":        p.chooseFile != nil,
 		"saveFile":          p.saveFile != nil,
 		"osVersion":         p.osVersion != nil,
 		"desktop":           p.desktop != nil,

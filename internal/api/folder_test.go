@@ -102,3 +102,28 @@ func TestOSAScriptFolderChooserError(t *testing.T) {
 		t.Fatalf("error should carry osascript output, got: %v", err)
 	}
 }
+
+func TestOSAScriptFileChooserStartsInTheFilesFolder(t *testing.T) {
+	dir := t.TempDir()
+	gone := filepath.Join(dir, "scripts", "watch.sh") // the folder is gone too
+	fr := &fakeRunner{out: []byte(filepath.Join(dir, "new.sh") + "\n")}
+	path, chosen, err := OSAScriptFileChooser(fr)(context.Background(), "Select the script file", gone)
+	if err != nil || !chosen || path != filepath.Join(dir, "new.sh") {
+		t.Fatalf("chooser = (%q, %v, %v)", path, chosen, err)
+	}
+	n := len(fr.args)
+	if n < 2 || fr.args[n-2] != "Select the script file" || fr.args[n-1] != dir {
+		t.Fatalf("run arguments = %q, want the prompt and the nearest existing folder", fr.args)
+	}
+	if !strings.Contains(strings.Join(fr.args, " "), "choose file with prompt") {
+		t.Fatalf("script does not open a file dialog: %q", fr.args)
+	}
+}
+
+func TestOSAScriptFileChooserCancel(t *testing.T) {
+	fr := &fakeRunner{out: []byte("execution error: User canceled. (-128)"), err: errors.New("exit status 1")}
+	path, chosen, err := OSAScriptFileChooser(fr)(context.Background(), "p", "")
+	if err != nil || chosen || path != "" {
+		t.Fatalf("cancel = (%q, %v, %v), want nothing chosen and no error", path, chosen, err)
+	}
+}

@@ -53,6 +53,12 @@ type RunTakeover interface {
 // POSIX path (chosen=false if the user cancelled). Optional.
 type FolderChooser func(ctx context.Context, start string) (path string, chosen bool, err error)
 
+// FileChooser opens a native "open file" dialog titled prompt, starting in the
+// folder of start (or the nearest one that exists), and returns the chosen
+// file's absolute path (chosen=false if the user cancelled). Optional; lets a
+// job's prompt or script be picked as a file in the task form.
+type FileChooser func(ctx context.Context, prompt, start string) (path string, chosen bool, err error)
+
 // SaveFileDialog opens a native "Save as" panel titled prompt, pre-filled with
 // defaultName, and returns the chosen POSIX path (chosen=false if the user
 // cancelled). Optional; enables exporting a task to a file from the app.
@@ -66,6 +72,7 @@ type Deps struct {
 	TakeOver     RunTakeover     // optional; lets continue take over a running run
 	OpenTerminal TerminalOpener  // optional; enables the continue-run endpoint
 	ChooseFolder FolderChooser   // optional; enables the native folder dialog
+	ChooseFile   FileChooser     // optional; enables the native file dialog for a job's source file
 	SaveFile     SaveFileDialog  // optional; enables the task export dialog
 	ActiveTasks  func() []string // optional; ids of currently-running tasks (hidden from the queue)
 	// ActiveRuns reports the start record of every run in flight. History
@@ -201,6 +208,7 @@ func Handler(d Deps) http.Handler {
 	mux.HandleFunc("POST /api/review/prompt", s.reviewPrompt)
 	mux.HandleFunc("GET /api/review/context", s.reviewContext)
 	mux.HandleFunc("POST /api/fs/choose", s.chooseFolder)
+	mux.HandleFunc("POST /api/fs/choose-file", s.chooseFile)
 	mux.HandleFunc("POST /api/fs/warm", s.warmNow)
 	mux.HandleFunc("GET /api/stats", s.getStats)
 	mux.HandleFunc("GET /api/health", s.getHealth)
@@ -1635,6 +1643,32 @@ func (s *server) chooseFolder(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
 	defer cancel()
 	path, chosen, err := s.d.ChooseFolder(ctx, r.URL.Query().Get("path"))
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	if !chosen {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"path": path})
+}
+
+// chooseFile opens the native file dialog for a job's source file. The query's
+// kind ("script" or anything else for a prompt) only words the dialog's
+// prompt; path is where it starts.
+func (s *server) chooseFile(w http.ResponseWriter, r *http.Request) {
+	if s.d.ChooseFile == nil {
+		writeErr(w, http.StatusServiceUnavailable, errors.New("file dialog not available"))
+		return
+	}
+	prompt := "Select the prompt file the task reads on every run"
+	if r.URL.Query().Get("kind") == string(task.KindScript) {
+		prompt = "Select the script file the task runs"
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+	defer cancel()
+	path, chosen, err := s.d.ChooseFile(ctx, prompt, r.URL.Query().Get("path"))
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, err)
 		return

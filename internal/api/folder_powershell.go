@@ -102,6 +102,24 @@ if ((ShowOwned $d) -eq [System.Windows.Forms.DialogResult]::OK) { Emit $d.Select
 	}
 }
 
+// PowerShellFileChooser returns a FileChooser that opens the native Windows
+// "Open" dialog in the nearest existing folder of start.
+func PowerShellFileChooser(r system.Runner) FileChooser {
+	return func(ctx context.Context, prompt, start string) (string, bool, error) {
+		script := psDialogPreamble + fmt.Sprintf(`
+$d = New-Object System.Windows.Forms.OpenFileDialog
+$d.Title = Decode '%s'
+$d.CheckFileExists = $true
+$d.Multiselect = $false
+$d.Filter = 'All files (*.*)|*.*'
+$start = Decode '%s'
+if ($start) { $d.InitialDirectory = $start }
+if ((ShowOwned $d) -eq [System.Windows.Forms.DialogResult]::OK) { Emit $d.FileName } else { EmitCancelled }
+`, b64(prompt), b64(existingDir(start)))
+		return runPowerShellDialog(ctx, r, "choose file", script)
+	}
+}
+
 // PowerShellSaveFileDialog returns a SaveFileDialog that opens the native
 // Windows "Save as" dialog, which itself asks before replacing a file.
 func PowerShellSaveFileDialog(r system.Runner) SaveFileDialog {

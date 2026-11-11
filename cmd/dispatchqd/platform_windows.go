@@ -112,6 +112,7 @@ func newPlatform(r system.Runner) platform {
 		},
 		notifyStatus:     toast.Status,
 		chooseFolder:     api.PowerShellFolderChooser(r),
+		chooseFile:       api.PowerShellFileChooser(r),
 		saveFile:         api.PowerShellSaveFileDialog(r),
 		osVersion:        osVersion(r),
 		stopStrayDaemons: killStrayDaemons,

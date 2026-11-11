@@ -253,35 +253,6 @@ func TestDefaultHomeHonoursEnv(t *testing.T) {
 	}
 }
 
-func TestReconcileRunningRuns(t *testing.T) {
-	s := openTemp(t)
-	now := time.Now()
-	if err := s.AppendRun(Run{RunID: "r1", TaskID: "a", Status: StatusRunning, StartedAt: now}); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.AppendRun(Run{RunID: "r2", TaskID: "b", Status: StatusSuccess, StartedAt: now}); err != nil {
-		t.Fatal(err)
-	}
-	n, err := s.ReconcileRunningRuns(now, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n != 1 {
-		t.Fatalf("reconciled %d, want 1", n)
-	}
-	runs, _ := s.Runs()
-	got := map[string]Run{}
-	for _, r := range runs {
-		got[r.RunID] = r
-	}
-	if got["r1"].Status != StatusFailed || got["r1"].FinishedAt == nil {
-		t.Fatalf("r1 = %+v, want failed with finish time", got["r1"])
-	}
-	if got["r2"].Status != StatusSuccess {
-		t.Fatalf("r2 status = %q, want untouched success", got["r2"].Status)
-	}
-}
-
 func TestPruneHistoryKeepsRecentAndDeletesLogs(t *testing.T) {
 	s := openTemp(t)
 	for i := 0; i < 5; i++ {

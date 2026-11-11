@@ -202,6 +202,10 @@ type PendingResume struct {
 	// provider cannot continue a session the old one owns, and dispatchq does not
 	// try — it starts fresh and says so.
 	ProviderID string `json:"provider_id,omitempty"`
+	// AfterInterrupt marks a session that continues because DispatchQ itself
+	// cut its run off (a shutdown, a daemon that died), not because of a limit.
+	// Such a session gets one more go: interrupted again, the task is retired.
+	AfterInterrupt bool `json:"after_interrupt,omitempty"`
 }
 
 // UnmarshalJSON accepts the shape written before the provider travelled with
@@ -326,6 +330,12 @@ func (s *State) PendingResume(taskID string) (PendingResume, bool) {
 // provider that issued it.
 func (s *State) SetPendingResume(taskID, sessionID, providerID string) {
 	s.PendingResumes[taskID] = PendingResume{SessionID: sessionID, ProviderID: providerID}
+}
+
+// SetInterruptedResume records that a task should continue the session a
+// DispatchQ shutdown or crash cut off (see PendingResume.AfterInterrupt).
+func (s *State) SetInterruptedResume(taskID, sessionID, providerID string) {
+	s.PendingResumes[taskID] = PendingResume{SessionID: sessionID, ProviderID: providerID, AfterInterrupt: true}
 }
 
 // ClearPendingResume clears any pending resume for a task.

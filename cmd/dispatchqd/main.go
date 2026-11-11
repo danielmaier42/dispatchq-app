@@ -225,6 +225,20 @@ func cmdRun(args []string) error {
 	notifier := &liveNotifier{st: st, desktop: plat.desktop}
 	notifier.settings() // read once now, so a send that cannot read them has settings to fall back on
 	eng.SetNotifier(notifier)
+	// A run whose output stopped reaching DispatchQ (its process outlived the
+	// daemon that started it) gets its outcome from the harness's transcript.
+	eng.SetSessionReader(func(rec store.Run) (provider.Result, bool) {
+		set, err := app.Providers(st)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "dispatchqd: run %s: read its session: %v\n", rec.RunID, err)
+			return provider.Result{}, false
+		}
+		res, ok, err := provider.ReadSessionOutcome(registry, set, rec)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "dispatchqd: run %s: read its session: %v\n", rec.RunID, err)
+		}
+		return res, ok
+	})
 	// A run's process can outlive the daemon that started it (an update that
 	// kills the old daemon, a crash). Take back every run still going before
 	// the first tick, so it shows as running and its task does not start a
@@ -237,7 +251,7 @@ func cmdRun(args []string) error {
 		fmt.Fprintf(os.Stdout, "dispatchqd: took back run %s (%s), still running as process %d\n", r.RunID, r.TaskName, r.PID)
 	}
 	if interrupted > 0 {
-		fmt.Fprintf(os.Stdout, "dispatchqd: reconciled %d interrupted run(s)\n", interrupted)
+		fmt.Fprintf(os.Stdout, "dispatchqd: recorded the end of %d run(s) that ended while no daemon watched them\n", interrupted)
 	}
 	// Each provider's allowance is read without spending any of it: on a
 	// timer, when the dashboard asks, and whenever a run on that account ends.

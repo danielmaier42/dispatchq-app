@@ -68,6 +68,14 @@ func (e *Engine) SleepInhibitor() SleepInhibitor { return e.awake.current() }
 // SetNotifier enables outcome notifications (failure / auth error).
 func (e *Engine) SetNotifier(n notify.Notifier) { e.notifier = n }
 
+// SetSessionReader installs how the engine reads a run's real outcome from its
+// harness's transcript, for a run whose output it could not read to the end: a
+// run taken back after a restart, or one whose process ended while no daemon
+// watched it. ok false means the transcript cannot tell.
+func (e *Engine) SetSessionReader(f func(rec store.Run) (res provider.Result, ok bool)) {
+	e.readSession = f
+}
+
 // SetRunFinished registers f to be told the provider instance a run just ended
 // on — the moment that account's allowance has moved. f must not block: it is
 // called on the finishing run's goroutine. Script jobs use no provider and do
@@ -180,6 +188,9 @@ type Engine struct {
 	runFinished     func(providerID string)
 	creditSeen      func(providerID string, block provider.Block, answered bool, at time.Time)
 	limits          func(ctx context.Context, inst provider.Instance) (provider.Limits, bool)
+	// readSession reads a run's outcome from its harness's own transcript (see
+	// SetSessionReader); nil means there is no way to.
+	readSession func(rec store.Run) (provider.Result, bool)
 
 	runCtx    context.Context
 	runCancel context.CancelFunc
@@ -1270,6 +1281,33 @@ func (e *Engine) finish(t task.Task, providerID string, rec store.Run, res provi
 	e.awake.release()
 	e.clearLive(rec.RunID)
 
+	// A run that failed because the daemon stopped it on its way down (the
+	// shutdown grace ran out) was cut off by DispatchQ, not by its own work.
+	interrupted := runErr == nil && !wasCanceled && e.runCtx.Err() != nil && res.Status == store.StatusFailed
+	e.conclude(t, providerID, rec, res, runErr, outcome{canceled: wasCanceled, takeover: takeover, interrupted: interrupted})
+}
+
+// outcome is what finish knows about how a run ended beyond its result.
+type outcome struct {
+	// canceled is a stop the user asked for; takeover waits for the record of
+	// a run taken over in Terminal.
+	canceled bool
+	takeover chan store.Run
+	// interrupted is a run DispatchQ itself cut off: a shutdown that stopped
+	// it, or a daemon that died under it with nothing left to say how it
+	// ended. A one-shot task continues such a run's session once (see
+	// resumeAfterInterrupt).
+	interrupted bool
+	// keepSchedule records the run without touching its task's scheduling
+	// state, for a run that is not the one the task's schedule follows.
+	keepSchedule bool
+}
+
+// conclude records how a run ended, updates its task's scheduling state and
+// sends the notification. The run holds no slot any more: finish has given it
+// back, or the run was never this daemon's (see Recover).
+func (e *Engine) conclude(t task.Task, providerID string, rec store.Run, res provider.Result, runErr error, how outcome) {
+	wasCanceled, takeover := how.canceled, how.takeover
 	finished := e.clock.Now()
 	rec.FinishedAt = &finished
 	rec.PID = 0
@@ -1311,8 +1349,9 @@ func (e *Engine) finish(t task.Task, providerID string, rec store.Run, res provi
 
 	// Targeted state update: touch only this task's keys so a concurrent API
 	// read-status change is preserved.
-	switch rec.Status {
-	case store.StatusRateLimited:
+	switch {
+	case how.keepSchedule:
+	case rec.Status == store.StatusRateLimited:
 		// Prefer the absolute reset time the CLI reported (rate_limit_event):
 		// block exactly until then plus a small buffer. Fall back to the retry
 		// delay, then to the blind backoff, when no reset time is known or it
@@ -1344,7 +1383,11 @@ func (e *Engine) finish(t task.Task, providerID string, rec store.Run, res provi
 			return nil
 		})
 	default:
-		e.retire(t.ID, oneShotTrigger(t.Trigger))
+		if how.interrupted && e.resumeAfterInterrupt(t, rec.SessionID, providerID) {
+			rec.Error += "; " + resumeAfterInterruptNote
+		} else {
+			e.retire(t.ID, oneShotTrigger(t.Trigger))
+		}
 	}
 
 	// Only now does the task leave the running set. What keeps a one-shot from
@@ -1395,6 +1438,40 @@ func (e *Engine) finish(t task.Task, providerID string, rec store.Run, res provi
 
 	// Notify outside any lock so channel I/O never blocks other finishing runs.
 	e.notifyOutcome(t, rec, res.FinalOutput)
+}
+
+// resumeAfterInterruptNote is added to the reason of a run whose session
+// continues after DispatchQ cut it off.
+const resumeAfterInterruptNote = "DispatchQ continues its session once when it runs again"
+
+// resumeAfterInterrupt plans one more go for a one-shot run that DispatchQ cut
+// off, and reports whether it did. Retiring the task would lose the work
+// halfway; starting it fresh would repeat what the run had already done (a
+// pushed commit, a posted comment). Continuing the session hands the model its
+// own record of what it did, which is what a rate-limit pause does too. A
+// session that was already continuing after an interruption is not given a
+// third go: whatever keeps cutting it off is not going to stop, and the task
+// is retired like any other ended run. Recurring tasks, scripts and runs
+// without a session keep their old behaviour.
+func (e *Engine) resumeAfterInterrupt(t task.Task, sessionID, providerID string) bool {
+	if !oneShotTrigger(t.Trigger) || t.IsScript() || sessionID == "" {
+		return false
+	}
+	resumed := false
+	err := e.store.UpdateState(func(st *store.State) error {
+		if p, ok := st.PendingResume(t.ID); ok && p.AfterInterrupt {
+			return nil
+		}
+		st.SetInterruptedResume(t.ID, sessionID, providerID)
+		st.ClearCompletedOnce(t.ID)
+		resumed = true
+		return nil
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dispatchqd: task %s: plan to continue its interrupted session: %v\n", t.ID, err)
+		return false
+	}
+	return resumed
 }
 
 // creditBlock reports an account block that is about the account's credit,

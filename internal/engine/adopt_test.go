@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -291,7 +292,7 @@ func TestRecoverMarksGoneRunInterrupted(t *testing.T) {
 	if len(adopted) != 0 || interrupted != 1 {
 		t.Fatalf("adopted %d, interrupted %d; want 0 and 1", len(adopted), interrupted)
 	}
-	if run := latestRun(t, st, "run-1"); run.Status != store.StatusFailed || run.Error != store.InterruptedError {
+	if run := latestRun(t, st, "run-1"); run.Status != store.StatusFailed || !strings.HasPrefix(run.Error, store.InterruptedError) {
 		t.Fatalf("run = %+v, want interrupted", run)
 	}
 	if s, _ := st.LoadState(); len(s.LiveRuns) != 0 {

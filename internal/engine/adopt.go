@@ -294,13 +294,23 @@ func (e *Engine) settleEnded(rec store.Run, current bool) bool {
 	how := outcome{keepSchedule: !current}
 	res, ok := e.sessionOutcome(rec)
 	if !ok {
-		res = provider.Result{Status: store.StatusFailed, SessionID: rec.SessionID,
-			SessionConfirmed: res.SessionConfirmed, Message: store.InterruptedError}
+		res = unknownEnd(res, rec, store.InterruptedError)
 		how.interrupted = true
 	}
 	fmt.Fprintf(os.Stdout, "dispatchqd: run %s (%s) ended while no daemon watched it: %s\n",
 		rec.RunID, rec.TaskName, endedText(res))
 	return e.conclude(t, rec.Provider.ID, rec, res, nil, how)
+}
+
+// unknownEnd is the outcome of a run whose end its transcript could not tell:
+// a failure with reason, keeping what the reader did find out (that the
+// harness knows the session, say).
+func unknownEnd(read provider.Result, rec store.Run, reason string) provider.Result {
+	read.Status, read.Message = store.StatusFailed, reason
+	if read.SessionID == "" {
+		read.SessionID = rec.SessionID
+	}
+	return read
 }
 
 // endedText is how the daemon log names the outcome of a run that ended
@@ -495,14 +505,12 @@ func (e *Engine) watchAdopted(ctx context.Context, t task.Task, providerID strin
 	// Without an outcome to read, the run counts as cut off, as a run that
 	// ended before the restart does (see settleEnded): its one-shot task
 	// continues the session once instead of being retired half done.
-	read, ok := e.sessionOutcome(rec)
+	res, ok := e.sessionOutcome(rec)
 	if ok {
-		e.finish(t, providerID, rec, read, nil)
+		e.finish(t, providerID, rec, res, nil)
 		return
 	}
-	res := provider.Result{Status: store.StatusFailed, SessionID: rec.SessionID,
-		SessionConfirmed: read.SessionConfirmed, Message: adoptedEndMessage}
-	e.end(t, providerID, rec, res, nil, true)
+	e.end(t, providerID, rec, unknownEnd(res, rec, adoptedEndMessage), nil, true)
 }
 
 // letGo gives back a taken-back run's slot without recording an outcome, for a

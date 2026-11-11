@@ -344,3 +344,21 @@ func TestAppendRunKeepsTheRecordWhenTheLockCannotBeHad(t *testing.T) {
 		t.Fatalf("no fallback file: %v", err)
 	}
 }
+
+// The review finding: a record whose own fallback file was written was
+// reported as not kept because another waiting record could not be kept.
+func TestAppendRunReportsItsOwnRecordKept(t *testing.T) {
+	s := openTemp(t)
+	s.sleep = func(time.Duration) {}
+	unblock := blockHistory(t, s)
+	defer unblock()
+	// No fallback file can be made for this one: its id names a folder that
+	// does not exist.
+	if err := s.AppendRun(finishedRun("no-such-dir/r0", StatusFailed)); errors.Is(err, ErrRunKept) {
+		t.Fatal("a record without a fallback file was reported as kept")
+	}
+	err := s.AppendRun(finishedRun("r1", StatusFailed))
+	if !errors.Is(err, ErrRunKept) {
+		t.Fatalf("AppendRun = %v, want r1 reported as kept", err)
+	}
+}

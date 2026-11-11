@@ -1477,11 +1477,7 @@ func (e *Engine) conclude(t task.Task, providerID string, rec store.Run, res pro
 			return nil
 		})
 	default:
-		// Only a session the harness itself named can be continued: an id
-		// DispatchQ assigned that the harness never took up (Codex picks its
-		// own; a harness killed before it started has none) would resume
-		// nothing. Without one the task is retired as before.
-		if how.interrupted && res.SessionConfirmed && e.resumeAfterInterrupt(t, rec, providerID) {
+		if how.interrupted && e.resumeAfterInterrupt(t, rec, providerID, res.SessionConfirmed) {
 			rec.Error += "; " + resumeAfterInterruptNote
 		} else {
 			e.retire(t.ID, oneShotTrigger(t.Trigger))
@@ -1553,9 +1549,15 @@ const resumeAfterInterruptNote = "DispatchQ continues its session once when it r
 // own record of what it did, which is what a rate-limit pause does too. A
 // session that was already continuing after an interruption is not given a
 // third go: whatever keeps cutting it off is not going to stop, and the task
-// is retired like any other ended run. Recurring tasks, scripts and runs
-// without a session keep their old behaviour.
-func (e *Engine) resumeAfterInterrupt(t task.Task, rec store.Run, providerID string) bool {
+// is retired like any other ended run. Recurring tasks and scripts keep their
+// old behaviour.
+//
+// Only a session the harness knows can be continued: one it named on this
+// run (named), or the waiting session this run resumed. An id DispatchQ
+// assigned that the harness never took up (Codex picks its own; a harness
+// killed before it started has none) would resume nothing, so without one the
+// task is retired as before.
+func (e *Engine) resumeAfterInterrupt(t task.Task, rec store.Run, providerID string, named bool) bool {
 	if !oneShotTrigger(t.Trigger) || t.IsScript() || rec.SessionID == "" {
 		return false
 	}
@@ -1575,7 +1577,11 @@ func (e *Engine) resumeAfterInterrupt(t task.Task, rec store.Run, providerID str
 		if st.IsCompletedOnce(t.ID) && st.IsRemovalOwed(t.ID) {
 			return nil
 		}
-		if p, ok := st.PendingResume(t.ID); ok && p.InterruptedRun != "" {
+		p, waiting := st.PendingResume(t.ID)
+		if !named && (!waiting || p.SessionID != rec.SessionID) {
+			return nil
+		}
+		if waiting && p.InterruptedRun != "" {
 			// The same run met again (its end was not recorded before the
 			// daemon stopped) is still the first interruption; any other run
 			// is the second.

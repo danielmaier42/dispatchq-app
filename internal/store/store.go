@@ -297,12 +297,15 @@ func (s *Store) AppendRun(r Run) error {
 	if err == nil {
 		return nil
 	}
-	waiting, merr := s.keepRun(r)
+	waiting, kept, merr := s.keepRun(r)
 	switch {
 	case !waiting:
 		return nil // a write in between took it
-	case merr != nil:
+	case !kept:
 		return fmt.Errorf("%w; the record could not be kept for later either: %w", err, merr)
+	case merr != nil:
+		// r is kept; another waiting record is not.
+		return fmt.Errorf("%w (%w; it is kept in %s; %w)", ErrRunKept, err, s.pendingPath(r.RunID), merr)
 	}
 	return fmt.Errorf("%w (%w; it is kept in %s)", ErrRunKept, err, s.pendingPath(r.RunID))
 }

@@ -75,19 +75,24 @@ func (s *Store) flushPending() error {
 
 // keepRun writes the fallback file of every record still waiting, after the
 // attempts to write history ran out. It returns whether r is still waiting
-// (another write may have taken it meanwhile) and the error keeping it.
-func (s *Store) keepRun(r Run) (bool, error) {
+// (another write may have taken it meanwhile), whether r's own record is kept,
+// and the error keeping any of them.
+func (s *Store) keepRun(r Run) (waiting, kept bool, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	waiting := false
 	for _, p := range s.pending {
 		waiting = waiting || p.RunID == r.RunID
 	}
 	if !waiting {
-		return false, nil
+		return false, false, nil
 	}
-	return true, s.markLocked()
+	err = s.markLocked()
+	return true, s.marked[r.RunID], err
 }
+
+// SetRetrySleep replaces how the store waits between the attempts of a failed
+// write. It is for tests, which must not spend wall-clock time on retries.
+func (s *Store) SetRetrySleep(f func(time.Duration)) { s.sleep = f }
 
 // pendingPath is the fallback file of a run record history did not take.
 func (s *Store) pendingPath(runID string) string {

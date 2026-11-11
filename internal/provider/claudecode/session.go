@@ -49,9 +49,12 @@ func (a *Adapter) SessionOutcome(inst provider.Instance, sessionID string, since
 	if err != nil || path == "" {
 		return provider.Result{}, false, err
 	}
+	// The transcript exists, so the session can be continued whatever its
+	// last turn says, and even when it cannot be read just now.
+	cutOff := provider.Result{SessionID: sessionID, SessionConfirmed: true}
 	f, err := os.Open(path)
 	if err != nil {
-		return provider.Result{}, false, fmt.Errorf("read session %s: %w", sessionID, err)
+		return cutOff, false, fmt.Errorf("read session %s: %w", sessionID, err)
 	}
 	defer func() { _ = f.Close() }()
 
@@ -78,11 +81,8 @@ func (a *Adapter) SessionOutcome(inst provider.Instance, sessionID string, since
 		tail = append(tail[:0], l)
 	}
 	if err := sc.Err(); err != nil {
-		return provider.Result{}, false, fmt.Errorf("read session %s: %w", sessionID, err)
+		return cutOff, false, fmt.Errorf("read session %s: %w", sessionID, err)
 	}
-	// The transcript exists, so the session can be continued whatever its
-	// last turn says.
-	cutOff := provider.Result{SessionID: sessionID, SessionConfirmed: true}
 	if len(tail) == 0 || tail[0].Type != "assistant" {
 		return cutOff, false, nil // ended on a tool result or a prompt: cut off mid-turn
 	}

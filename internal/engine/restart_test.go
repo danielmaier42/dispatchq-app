@@ -338,3 +338,29 @@ func TestShutdownCutOffBeforeTheSessionWasNamedIsRetired(t *testing.T) {
 		t.Fatal("a continuation was planned for a session the harness never named")
 	}
 }
+
+// The review finding: a run resuming a session a limit paused, cut off before
+// the harness named the session again, was retired, although the session it
+// resumed is one the harness had named. It continues once.
+func TestAResumeCutOffBeforeTheSessionWasNamedAgainContinues(t *testing.T) {
+	fc := clock.NewFake(time.Date(2026, 11, 9, 9, 31, 27, 0, time.UTC))
+	r := &ctxStub{unconfirmed: true}
+	e, st := newTestEngine(t, r, fc)
+	saveTasks(t, st, asapTask("relock", false))
+	if err := st.UpdateState(func(s *store.State) error {
+		s.SetPendingResume("relock", "sess-paused", "claude")
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool { return r.activeStarted() == 1 })
+	e.runCancel()
+	e.WaitIdle()
+	s, _ := st.LoadState()
+	if p, ok := s.PendingResume("relock"); !ok || p.SessionID != "sess-paused" || !p.AfterInterrupt {
+		t.Fatalf("pending = %+v, %v; want the resumed session continued once", p, ok)
+	}
+}

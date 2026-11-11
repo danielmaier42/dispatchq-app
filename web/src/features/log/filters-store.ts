@@ -2,7 +2,8 @@ import {create} from 'zustand'
 import {emptyFilters, type LogFilters} from './runs'
 
 // The Log's filters outlive the view: switching to the Queue and back finds
-// the list as it was left. `limit` is how many matching runs are shown; any
+// the list as it was left. They live in memory only, so a reload starts with
+// none set and the hidden runs hidden again. `limit` is how many matching runs are shown; any
 // change of filter starts again at the first page.
 export const PAGE = 25
 
@@ -25,6 +26,7 @@ export const filtersOf = ({
   status,
   from,
   to,
+  hidden,
 }: LogFilters): LogFilters => ({
   query,
   show,
@@ -34,4 +36,5 @@ export const filtersOf = ({
   status,
   from,
   to,
+  hidden,
 })

@@ -100,6 +100,14 @@ type Run struct {
 	// the run has ended or when it was never known.
 	PID int `json:"pid,omitempty"`
 
+	// Quiet marks the routine success of a quiet-history task. It is kept only
+	// briefly (see QuietRunMaxAge and QuietRunsPerTask), never counts as unread,
+	// is left out of the Log, `dispatchq status` and the usage statistics
+	// unless they are asked to show hidden runs, and does not count against the
+	// run history limit. Every other outcome of such a task is recorded without
+	// it, like any other run's.
+	Quiet bool `json:"quiet,omitempty"`
+
 	// Task is a snapshot of the definition this run used, so the run can be
 	// replayed from history even after the task leaves the queue.
 	Task *task.Task `json:"task,omitempty"`

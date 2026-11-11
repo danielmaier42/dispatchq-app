@@ -5,7 +5,7 @@ import {Button} from '@/components/ui/button'
 import {EmptyState} from '@/components/ui/empty-state'
 import {Skeleton} from '@/components/ui/skeleton'
 import {groupByDay} from '@/lib/format'
-import {useHealth, useProviders, useRuns} from '@/lib/queries'
+import {useHealth, useProviders, useRuns, useTasks} from '@/lib/queries'
 import {useNoCredit} from '@/features/dashboard/use-no-credit'
 import {LogToolbar} from './components/LogToolbar'
 import {RunRow} from './components/RunRow'
@@ -24,12 +24,14 @@ import {
 // The Log is the run history: every run, newest first, split by day, with the
 // runs of one workflow boxed together. Opening a run shows its log.
 export function LogView() {
-  const runsQuery = useRuns()
-  const runs = runsQuery.data
   const state = useLogFilters()
+  const runsQuery = useRuns(state.hidden)
+  const runs = runsQuery.data
   const limitedUntil = useHealth().data?.limited_until || undefined
   const noCredit = useNoCredit()
   const showProvider = (useProviders().data?.length ?? 0) > 1
+  // Only a queue with a quiet-history task can have hidden runs to point at.
+  const anyQuiet = useTasks().data?.some((t) => t.quiet_history) ?? false
 
   const {f, menus} = useMemo(() => {
     const all = runs ?? []
@@ -50,7 +52,10 @@ export function LogView() {
     <ViewLayout
       title="Log"
       subtitle={runs?.length ? `${runs.length} run${runs.length === 1 ? '' : 's'}` : undefined}
-      toolbar={runs?.length ? <LogToolbar f={f} menus={menus} /> : undefined}
+      // The bar stays once the list is loaded, even empty: an install whose
+      // only runs are hidden needs its Show hidden runs switch to see them, and
+      // with the switch on, its chip is the way to turn it off.
+      toolbar={runs || state.hidden ? <LogToolbar f={f} menus={menus} /> : undefined}
     >
       {!runs ? (
         runsQuery.isError ? (
@@ -67,7 +72,13 @@ export function LogView() {
         <EmptyState
           icon={<History />}
           title="Nothing logged yet"
-          description="Runs will appear here after tasks execute."
+          description={
+            state.hidden
+              ? 'No run is recorded, hidden runs included. Runs will appear here after tasks execute.'
+              : anyQuiet
+                ? 'Runs will appear here after tasks execute. Successful runs of quiet-history tasks are hidden; Filter → Show hidden runs lists them.'
+                : 'Runs will appear here after tasks execute.'
+          }
         />
       ) : !filtered.length ? (
         <EmptyState

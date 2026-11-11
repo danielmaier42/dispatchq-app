@@ -35,15 +35,18 @@ func runQuietTask(t *testing.T, status store.RunStatus) *store.Store {
 	return st
 }
 
-func TestQuietTaskLeavesNoTraceUnlessItNeedsAttention(t *testing.T) {
+// A quiet task's success is recorded, marked quiet, with its log kept, so the
+// Log can show it on request; every other outcome is recorded like any other
+// run's: not quiet, unread, and listed by default.
+func TestQuietTaskRecordsSuccessAsQuietAndTheRestAsUsual(t *testing.T) {
 	cases := []struct {
 		status store.RunStatus
-		kept   bool
+		quiet  bool
 	}{
-		{store.StatusSuccess, false},
-		{store.StatusRateLimited, true}, // it holds up the whole provider: show it
-		{store.StatusFailed, true},
-		{store.StatusAuthError, true},
+		{store.StatusSuccess, true},
+		{store.StatusRateLimited, false}, // it holds up the whole provider: show it
+		{store.StatusFailed, false},
+		{store.StatusAuthError, false},
 	}
 	for _, c := range cases {
 		t.Run(string(c.status), func(t *testing.T) {
@@ -52,26 +55,75 @@ func TestQuietTaskLeavesNoTraceUnlessItNeedsAttention(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, logErr := os.Stat(st.LogPath("run-1"))
-			if !c.kept {
-				if len(runs) != 0 {
-					t.Fatalf("a quiet %s must stay out of history, got %+v", c.status, runs)
-				}
-				if !os.IsNotExist(logErr) {
-					t.Fatal("the unrecorded run's log must be deleted")
-				}
-				return
+			if len(runs) != 1 || runs[0].Status != c.status || runs[0].RunID != "run-1" || runs[0].Quiet != c.quiet {
+				t.Fatalf("a quiet task's %s must be recorded with quiet=%t, got %+v", c.status, c.quiet, runs)
 			}
-			if len(runs) != 1 || runs[0].Status != c.status || runs[0].RunID != "run-1" {
-				t.Fatalf("a quiet %s must be recorded like any other run, got %+v", c.status, runs)
+			if _, err := os.Stat(st.LogPath("run-1")); err != nil {
+				t.Fatalf("the recorded run's log must remain for inspection: %v", err)
 			}
-			if logErr != nil {
-				t.Fatal("the kept run's log must remain for inspection")
-			}
-			if state, _ := st.LoadState(); state.IsRead("run-1") {
-				t.Fatal("a kept quiet run is unread like any other")
+			if visible := store.VisibleRuns(runs); len(visible) == 1 == c.quiet {
+				t.Fatalf("a %s of a quiet task: visible by default = %t, want %t", c.status, len(visible) == 1, !c.quiet)
 			}
 		})
+	}
+}
+
+// Recording quiet successes must not let a frequent watcher take over the
+// history: they are pruned on their own retention and do not count against
+// the run history limit.
+func TestQuietRunsDoNotCrowdOutRealHistory(t *testing.T) {
+	fc := clock.NewFake(time.Date(2026, 9, 7, 8, 0, 0, 0, time.UTC))
+	r := &stub{result: func(req executor.Request, _ int) provider.Result {
+		if req.Task.ID == "real" {
+			return provider.Result{Status: store.StatusFailed, ExitCode: 1}
+		}
+		return provider.Result{Status: store.StatusSuccess}
+	}}
+	e, st := newTestEngine(t, r, fc)
+	watcher := asapTask("watch", false)
+	watcher.Trigger, watcher.Cron = task.TriggerCron, "*/15 * * * *"
+	watcher.QuietHistory = true
+	saveTasks(t, st, asapTask("real", false), watcher)
+	if err := st.UpdateConfig(func(c *store.Config) error {
+		c.Settings.MaxRunHistory = 2
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := e.RunTaskNow(context.Background(), "real"); err != nil {
+		t.Fatal(err)
+	}
+	e.WaitIdle()
+	const ticks = 5
+	for range ticks {
+		fc.Advance(15 * time.Minute)
+		if err := e.RunTaskNow(context.Background(), "watch"); err != nil {
+			t.Fatal(err)
+		}
+		e.WaitIdle()
+	}
+	runs, _ := st.Runs()
+	if v := store.VisibleRuns(runs); len(v) != 1 || v[0].TaskID != "real" {
+		t.Fatalf("the real run must survive the quiet ticks under a limit of 2: %+v", runs)
+	}
+	if len(runs) != ticks+1 {
+		t.Fatalf("all quiet ticks are within their retention: got %d runs", len(runs))
+	}
+
+	// Past their retention and its grace (too few for a batch), the next tick
+	// finds the earlier ones expired.
+	fc.Advance(store.QuietRunMaxAge + store.QuietPruneGrace + time.Minute)
+	if err := e.RunTaskNow(context.Background(), "watch"); err != nil {
+		t.Fatal(err)
+	}
+	e.WaitIdle()
+	runs, _ = st.Runs()
+	if len(runs) != 2 || runs[0].TaskID != "real" || !runs[1].Quiet {
+		t.Fatalf("expired quiet runs must be pruned, the real one kept: %+v", runs)
+	}
+	if _, err := os.Stat(st.LogPath("run-2")); !os.IsNotExist(err) {
+		t.Fatalf("the log of a pruned quiet run must go with it: %v", err)
 	}
 }
 
@@ -103,8 +155,8 @@ func TestQuietRunIsNotRecordedWhileRunning(t *testing.T) {
 	}
 	close(r.block)
 	e.WaitIdle()
-	if runs, _ := st.Runs(); len(runs) != 0 {
-		t.Fatalf("finished quiet run must be gone: %+v", runs)
+	if runs, _ := st.Runs(); len(runs) != 1 || !runs[0].Quiet || runs[0].Status != store.StatusSuccess {
+		t.Fatalf("a finished quiet success is recorded as quiet: %+v", runs)
 	}
 	if live := e.ActiveRuns(); len(live) != 0 {
 		t.Fatalf("a finished run is no longer in flight: %+v", live)

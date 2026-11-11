@@ -49,7 +49,7 @@ workflow engine:
 - **Run a watcher every fifteen minutes** that checks a feed, a mailbox or a
   build. Write it as a *script job* and it costs no usage at all, keeps running
   while the allowance is gone, and queues a real agent job the moment it finds
-  something. Quiet history keeps its successes out of the record; a real change
+  something. Quiet history keeps its successes out of the Log; a real change
   reaches your phone as a push notification.
 - **Ask Claude and Codex the same question**, with a third task that waits for
   both and merges the answers into one report.
@@ -441,8 +441,9 @@ explains it.
 - **Own notifications.** A run sends a message with `dispatchq notify`,
   optionally with a link that opens on click. See
   [Letting a task send a notification](#letting-a-task-send-a-notification).
-- **Quiet history** for frequent watchers: successful runs leave no record,
-  failures do. See [Quiet history for frequent jobs](#quiet-history-for-frequent-jobs).
+- **Quiet history** for frequent watchers: successful runs stay out of the Log
+  (two days on hand behind **Show hidden runs**), failures show as usual. See
+  [Quiet history for frequent jobs](#quiet-history-for-frequent-jobs).
 - **Backfill tasks** soak up allowance that would otherwise expire: they run
   only while a provider's urgency is above a threshold you set on the
   Dashboard. See [Backfill tasks](#backfill-tasks).
@@ -676,11 +677,15 @@ first. The window opens on the Dashboard:
   (Running shows only the runs executing right now, Failed the failed ones and
   auth errors), and **Filter**, which
   holds the queue **group**, the **task**, the **provider**, the **outcome**
-  (success, failed, rate limited, …) and the start date (Any time, Today,
-  7 days, 30 days, or a From/To day). Its badge counts what is set; each active
+  (success, failed, rate limited, …), the start date (Any time, Today,
+  7 days, 30 days, or a From/To day) and **Show hidden runs**. Its badge counts what is set; each active
   filter also shows as a chip next to it, × removes that one, and **Reset** in
-  the popover clears them all. Runs of a *quiet history* task
-  appear here only if they did not succeed.
+  the popover clears them all. A *quiet history* task's successful runs are
+  hidden: the list shows its runs that did not succeed (and the one in flight)
+  without any filter, and **Show hidden runs** adds the successes still kept
+  (up to 48 hours, see [Quiet history](#quiet-history-for-frequent-jobs)), each marked **Hidden** with an eye icon. The switch is temporary:
+  it holds while the window stays open (like the other filters, it survives a
+  trip to another view) and is off again after a reload or a restart.
 - **Artifacts** — files your tasks published, newest first.
   The list is grouped by day (Today, Yesterday, then the date), one card per
   artifact with an icon and colour for its file type (the switch next to
@@ -795,7 +800,7 @@ in the list, and leaving Settings keeps the draft for the session.
 | | Accent colour | System, a preset, or your own | *System* follows the accent colour set in macOS, live. A preset or the colour picker pins another one for buttons, selections and highlights; text on it switches between white and black so it stays readable. Stored as `accent` (`#rrggbb`, empty = follow macOS). |
 | **Execution** | Global pause | Pause all runs | Global stop switch: nothing starts while it is on, not even *Run now*; a run already in flight keeps going. |
 | | Runs | Stop a run with no output for | Idle-timeout watchdog: kills a hung run (default 30 min; a working run keeps streaming and is unaffected; Off disables it). |
-| | | Keep run history | How many runs (and their logs) to retain before pruning (default 3000; Unlimited keeps everything). An unread run that did not succeed (failed, auth error, canceled, interrupted, waiting on a rate limit) is kept past the limit until you read it. Pruning runs in batches: history may grow a tenth past the limit before it is cut back to it. |
+| | | Keep run history | How many runs (and their logs) to retain before pruning (default 3000; Unlimited keeps everything). An unread run that did not succeed (failed, auth error, canceled, interrupted, waiting on a rate limit) is kept past the limit until you read it. Pruning runs in batches: history may grow a tenth past the limit before it is cut back to it. The hidden successes of quiet-history tasks do not count; they have their own retention (see [Quiet history](#quiet-history-for-frequent-jobs)). |
 | | Scheduler | Check for due tasks every | How often the daemon wakes to look for work (15 min – 6 h; also the wake safety-net interval). |
 | **Notifications** | On this computer | Keep alerts on screen | Opens System Settings → Notifications, where DispatchQ's alert style lives: *Banners* disappear on their own, *Alerts* stay until you click them. A warning sits on top while macOS hides DispatchQ's notifications. |
 | | | Notify about new artifacts | On by default; the same switch sits as **Notify me** in the Artifacts toolbar. Off: a published artifact still lands in Artifacts, but raises no notification on any channel and no entry in Notifications. Switching it back on does not announce what was published in the meantime. |
@@ -1224,6 +1229,7 @@ dispatchq move   ID INDEX                        # 0 = highest priority
 dispatchq run-now ID                             # run once, now, for testing
 dispatchq status [--all]                         # recent runs; unread marked *
 dispatchq status [--all] --json                  # the same runs as JSON: origin job, error, log path
+dispatchq status [--all] --hidden [--json]       # also the hidden successes of quiet-history tasks
 dispatchq read RUNID | dispatchq read-all
 dispatchq provider list [--json]                 # the harnesses tasks run on
 dispatchq provider show ID [--json]
@@ -1293,7 +1299,7 @@ dispatchq edit nightly-sweep --cron "30 2 * * 1-5"          # reschedule
 dispatchq edit nightly-sweep --model opus --notify=true     # per-task overrides
 dispatchq edit nightly-sweep --provider claude             # run it on another provider
 dispatchq edit review-branch --provider codex --reasoning-effort xhigh
-dispatchq edit prod-watch --quiet-history=true              # drop its successful runs
+dispatchq edit prod-watch --quiet-history=true              # hide its successful runs
 dispatchq edit nightly-sweep --group "Nightly"              # file it under a queue group
 dispatchq edit nightly-sweep --group ""                     # and take it back out
 dispatchq edit nightly-sweep --enabled=false                # pause it
@@ -1762,19 +1768,28 @@ the `Max run history` limit until it pushes a run you actually care about out of
 the record. Mark such a task **Quiet history** (the switch in the task form, or
 `--quiet-history` on `dispatchq add` / `dispatchq edit` / `dispatchq queue`) and:
 
-- A run that **succeeds leaves no trace**: it is never written to history, and
-  its log is deleted when it finishes.
+- A run that **succeeds is hidden**: it is written to history marked
+  `"quiet": true`, with its log, but the Log leaves it out unless
+  **Show hidden runs** is on (see [The app](#the-app)), it is never unread,
+  and `dispatchq status` lists it only with `--hidden`. Hidden runs are kept
+  for **48 hours, at most the newest 200 per task**, and are then deleted with
+  their logs. So that the history file is not rewritten on every tick, they
+  go in batches after a run finishes: once more than 20 are due across all
+  tasks, or once one is six hours past its 48 hours. A hidden run can
+  therefore stay up to six hours (or 20 runs) longer. When the daemon starts,
+  every expired one goes at once. They do not count against *Keep run history*, so a watcher
+  that ticks every five minutes never pushes a real run out of the record.
 - A run that **fails, hits an auth problem, is cancelled, or is paused by the
-  rate limit is recorded** with its log, unread, exactly like an ordinary run,
-  and notifies as usual. A pause is kept even though the daemon resumes it by
+  rate limit is recorded** with its log, unread, exactly like an ordinary run:
+  it shows in the Log without any filter, and notifies as usual. A pause is kept even though the daemon resumes it by
   itself: it closes that provider's gate and holds up every other task on it,
   so it is the answer to "why is nothing running?" — and its Log entry is
   where **Cancel resume** lives.
 - While it is running, it shows like any other run: the Queue's *running*
   badge, an entry in the Log and on the Dashboard's **Running now** card, with
-  its live log and **Cancel task**. The entry is held in memory only, never
-  counts as unread, and goes when the run succeeds; `dispatchq status` reads history, so it does not list
-  the run.
+  its live log and **Cancel task**. The entry is held in memory only and never
+  counts as unread; when the run succeeds it turns into a hidden run.
+  `dispatchq status` reads history, so it does not list the run in flight.
 - The Dashboard's **Up next** card leaves it out; the Queue still lists it with
   its next run.
 
@@ -1782,8 +1797,9 @@ Everything else — notifications the run sends, artifacts it publishes, tasks i
 queues — is unaffected. A task queued from inside a quiet-history run is **not**
 quiet itself unless the call says `--quiet-history`: follow-up work is real
 work, and you will want to see its run.
-The trade-off: successful quiet runs leave no log to look at afterwards and are
-absent from the Usage statistics.
+The trade-off: a successful quiet run's log is there for two days only, and
+hidden runs are absent from the Usage statistics (and from what
+[Ask DispatchQ](#asking-dispatchq) lists, though it finds one by its run id).
 
 ## Backfill tasks
 
@@ -2261,8 +2277,8 @@ environment variable):
 | Path | Contents |
 |------|----------|
 | `config.toml` | Global settings, the configured [providers](#providers) and [pools](#provider-pools), and the ordered task list — the order is the priority, and tasks of one group sit together in it (human-readable, versionable). No credentials: a provider entry holds its CLI's path and configuration directory, never what is inside them. |
-| `history.jsonl` | Append-only index of every run (except a quiet-history task's successful ones, which are never written), pruned to *Keep run history*; unread runs that did not succeed are never pruned. Scripts read it through `dispatchq status --all --json`. |
-| `runs/<run-id>.log` | Full log for each run. |
+| `history.jsonl` | Append-only index of every run, pruned to *Keep run history*; unread runs that did not succeed are never pruned. A quiet-history task's successful runs carry `"quiet": true` and are dropped after 48 hours (at most 200 per task are kept). Scripts read it through `dispatchq status --all --json`, which leaves those out unless `--hidden` is given. |
+| `runs/<run-id>.log` | Full log for each run; a hidden run's log is deleted with it. |
 | `artifacts.json` | Index of published artifacts (title, source task/run, its group and parent job, file name, size, type). |
 | `artifacts/<id>/<file>` | The published files themselves (snapshots copied at publish time). |
 | `notifications.json` | Outbox of notifications sent with `dispatchq notify`, waiting for the daemon to deliver them (normally empty). |

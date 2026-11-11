@@ -12,7 +12,6 @@
 package store
 
 import (
-	"bufio"
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
@@ -274,21 +273,26 @@ func (s *Store) AppendRun(r Run) error {
 		return fmt.Errorf("encode run: %w", err)
 	}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	// The cross-process lock keeps the append out of another process's
+	// rewrite of history (PruneHistory, PruneQuietRuns), which would
+	// otherwise replace the file with a copy that lacks this line.
+	return s.withWriteLock(func() error {
+		s.mu.Lock()
+		defer s.mu.Unlock()
 
-	f, err := os.OpenFile(s.path(historyFile), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
-	if err != nil {
-		return fmt.Errorf("open history: %w", err)
-	}
-	if _, err := f.Write(append(line, '\n')); err != nil {
-		_ = f.Close()
-		return fmt.Errorf("write history: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("close history: %w", err)
-	}
-	return nil
+		f, err := os.OpenFile(s.path(historyFile), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		if err != nil {
+			return fmt.Errorf("open history: %w", err)
+		}
+		if _, err := f.Write(append(line, '\n')); err != nil {
+			_ = f.Close()
+			return fmt.Errorf("write history: %w", err)
+		}
+		if err := f.Close(); err != nil {
+			return fmt.Errorf("close history: %w", err)
+		}
+		return nil
+	})
 }
 
 // AppendRunLog appends a line to a run's log file (used to record the final
@@ -311,37 +315,13 @@ func (s *Store) Runs() ([]Run, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	f, err := os.Open(s.path(historyFile))
-	if errors.Is(err, os.ErrNotExist) {
+	latest, order, err := s.readHistoryLocked()
+	if err != nil {
+		return nil, err
+	}
+	if latest == nil { // no history file yet
 		return nil, nil
 	}
-	if err != nil {
-		return nil, fmt.Errorf("open history: %w", err)
-	}
-	defer func() { _ = f.Close() }()
-
-	latest := map[string]Run{}
-	var order []string
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(line) == 0 {
-			continue
-		}
-		var r Run
-		if err := json.Unmarshal(line, &r); err != nil {
-			return nil, fmt.Errorf("parse history line: %w", err)
-		}
-		if _, seen := latest[r.RunID]; !seen {
-			order = append(order, r.RunID)
-		}
-		latest[r.RunID] = r
-	}
-	if err := sc.Err(); err != nil {
-		return nil, fmt.Errorf("read history: %w", err)
-	}
-
 	out := make([]Run, 0, len(order))
 	for _, id := range order {
 		out = append(out, latest[id])
@@ -420,7 +400,9 @@ func (s *Store) BackfillLastRuns() (int, error) {
 
 // PruneHistory keeps the most recent `limit` runs: it compacts history.jsonl
 // to one latest event per kept run and deletes the log files of the dropped
-// runs. limit <= 0 keeps everything.
+// runs. limit <= 0 keeps everything. Quiet runs neither count against the
+// limit nor are dropped by it: PruneQuietRuns bounds them, so a watcher's
+// ticks never push a real run out of the record.
 //
 // An older run is kept past the limit while it is unread and did not succeed
 // (failed, auth error, canceled, interrupted, still waiting on a rate limit):
@@ -437,74 +419,67 @@ func (s *Store) PruneHistory(limit int) error {
 	if limit <= 0 {
 		return nil
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	return s.rewriteHistoryIfDue(func(rewrite bool) (bool, error) {
+		return s.pruneHistoryLocked(limit, rewrite)
+	})
+}
 
-	f, err := os.Open(s.path(historyFile))
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
+// pruneHistoryLocked reports whether a batch of runs is due to be dropped and,
+// when rewrite is set, drops it. The caller holds s.mu, and for a rewrite the
+// cross-process write lock as well.
+func (s *Store) pruneHistoryLocked(limit int, rewrite bool) (bool, error) {
+	latest, order, err := s.readHistoryLocked()
 	if err != nil {
-		return fmt.Errorf("open history: %w", err)
+		return false, err
 	}
-	latest := map[string]Run{}
-	var order []string
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(line) == 0 {
-			continue
+	var counted []string
+	for _, id := range order {
+		if !latest[id].Quiet {
+			counted = append(counted, id)
 		}
-		var r Run
-		if err := json.Unmarshal(line, &r); err != nil {
-			_ = f.Close()
-			return fmt.Errorf("parse history line: %w", err)
-		}
-		if _, seen := latest[r.RunID]; !seen {
-			order = append(order, r.RunID)
-		}
-		latest[r.RunID] = r
-	}
-	scErr := sc.Err()
-	_ = f.Close()
-	if scErr != nil {
-		return fmt.Errorf("read history: %w", scErr)
 	}
 
 	slack := pruneSlack(limit)
-	if len(order)-limit <= slack {
-		return nil
+	if len(counted)-limit <= slack {
+		return false, nil
 	}
 	st, err := s.loadStateLocked()
 	if err != nil {
-		return fmt.Errorf("prune history: %w", err)
+		return false, fmt.Errorf("prune history: %w", err)
 	}
-	older := order[:len(order)-limit]
-	var drop, keep []string
-	for _, id := range older {
+	var drop []string
+	dropped := map[string]bool{}
+	for _, id := range counted[:len(counted)-limit] {
 		if r := latest[id]; !r.Status.Terminal() || (r.Status != StatusSuccess && !st.IsRead(id)) {
-			keep = append(keep, id)
 			continue
 		}
 		drop = append(drop, id)
+		dropped[id] = true
 	}
 	if len(drop) <= slack {
-		return nil
+		return false, nil
 	}
-	keep = append(keep, order[len(order)-limit:]...)
+	if !rewrite {
+		return true, nil
+	}
+	keep := make([]string, 0, len(order)-len(drop))
+	for _, id := range order {
+		if !dropped[id] {
+			keep = append(keep, id)
+		}
+	}
 
 	var buf bytes.Buffer
 	for _, id := range keep {
 		b, err := json.Marshal(latest[id])
 		if err != nil {
-			return fmt.Errorf("marshal run: %w", err)
+			return true, fmt.Errorf("marshal run: %w", err)
 		}
 		buf.Write(b)
 		buf.WriteByte('\n')
 	}
 	if err := writeAtomic(s.path(historyFile), buf.Bytes()); err != nil {
-		return fmt.Errorf("rewrite history: %w", err)
+		return true, fmt.Errorf("rewrite history: %w", err)
 	}
 	for _, id := range drop {
 		p := latest[id].LogPath
@@ -513,7 +488,7 @@ func (s *Store) PruneHistory(limit int) error {
 		}
 		_ = os.Remove(p)
 	}
-	return nil
+	return true, nil
 }
 
 // pruneSlack is how many runs past the limit PruneHistory lets accumulate

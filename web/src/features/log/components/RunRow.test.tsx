@@ -49,4 +49,21 @@ describe('RunRow', () => {
     expect(beside.className).toContain('@2xl/run:block')
     expect(under.textContent).toBe(beside.textContent)
   })
+
+  it('marks a hidden run as hidden, and no other run', () => {
+    const {rerender} = render(
+      <TooltipProvider>
+        <RunRow run={{...run, quiet: true}} showProvider={false} />
+      </TooltipProvider>,
+    )
+    expect(screen.getByText('Hidden')).toBeTruthy()
+    expect(screen.getByLabelText('Hidden')).toBeTruthy()
+    rerender(
+      <TooltipProvider>
+        <RunRow run={run} showProvider={false} />
+      </TooltipProvider>,
+    )
+    expect(screen.queryByText('Hidden')).toBeNull()
+    expect(screen.queryByLabelText('Hidden')).toBeNull()
+  })
 })

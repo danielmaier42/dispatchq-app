@@ -88,7 +88,7 @@ The new task inherits this task's provider, model, permissions, parallelism and 
   --parallel=true|false            whether it may run alongside other parallel tasks
   --skip-permissions=true|false    bypass permission prompts; grant this only when the queued work cannot be done without it
   --notify=true|false              send a notification with the outcome when it finishes
-  --quiet-history=true|false       keep its successful runs out of history (off by default, even when this task is quiet)
+  --quiet-history=true|false       hide its successful runs from the Log (off by default, even when this task is quiet)
   --kind script                    queue a program instead of a prompt: --prompt is then the script itself, run without any model (no provider, no usage, never held up by a rate limit). Use it only for work that is pure plumbing — polling, diffing, shelling out — and never to avoid thinking about something.
 
 Only queue a task when the work genuinely belongs in a separate run; if something should simply be done now, just do it yourself.

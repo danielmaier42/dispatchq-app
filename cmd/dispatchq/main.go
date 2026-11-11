@@ -75,7 +75,8 @@ Usage:
   dispatchq enable ID | dispatchq disable ID
   dispatchq move   ID INDEX          (0 = highest priority)
   dispatchq run-now ID               (run once, now, for testing)
-  dispatchq status [--all] [--json]  (recent runs; unread marked *. --json adds the
+  dispatchq status [--all] [--hidden] [--json]  (recent runs; unread marked *. --hidden adds
+                 the routine successes of quiet-history tasks; --json adds the
                  origin job, error and log path of each run)
   dispatchq read RUNID | dispatchq read-all
   dispatchq provider ...             (the harnesses tasks run on; run it for its own help)
@@ -784,12 +785,6 @@ func printLatestRun(st *store.Store, taskID string, since time.Time) error {
 			return nil
 		}
 	}
-	// A quiet-history task records only runs that need attention, so finding
-	// nothing is the expected outcome there, not a missing record.
-	if t, err := findTask(st, taskID); err == nil && t.QuietHistory {
-		fmt.Println("no run recorded (quiet history: only failures are kept)")
-		return nil
-	}
 	fmt.Println("no run recorded")
 	return nil
 }
@@ -813,6 +808,9 @@ type statusRun struct {
 	StartedAt   time.Time       `json:"started_at"`
 	FinishedAt  *time.Time      `json:"finished_at,omitempty"`
 	Unread      bool            `json:"unread"`
+	// Quiet marks a quiet-history task's routine success, listed only with
+	// --hidden.
+	Quiet bool `json:"quiet,omitempty"`
 }
 
 // newStatusRun flattens r for `status --json`. The origin is the job at the
@@ -838,12 +836,14 @@ func newStatusRun(r store.Run, unread bool) statusRun {
 		StartedAt:   r.StartedAt,
 		FinishedAt:  r.FinishedAt,
 		Unread:      unread,
+		Quiet:       r.Quiet,
 	}
 }
 
 func cmdStatus(st *store.Store, args []string) error {
 	fs := flag.NewFlagSet("status", flag.ContinueOnError)
 	all := fs.Bool("all", false, "show all runs (default: last 20)")
+	hidden := fs.Bool("hidden", false, "include the routine successes of quiet-history tasks")
 	asJSON := fs.Bool("json", false, "print the runs as JSON, with origin, error and log path")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -852,6 +852,9 @@ func cmdStatus(st *store.Store, args []string) error {
 	runs, err := st.Runs()
 	if err != nil {
 		return err
+	}
+	if !*hidden {
+		runs = store.VisibleRuns(runs)
 	}
 	state, err := st.LoadState()
 	if err != nil {
@@ -863,7 +866,7 @@ func cmdStatus(st *store.Store, args []string) error {
 	if *asJSON {
 		out := make([]statusRun, 0, len(runs))
 		for _, r := range runs {
-			out = append(out, newStatusRun(r, !state.IsRead(r.RunID)))
+			out = append(out, newStatusRun(r, !r.Quiet && !state.IsRead(r.RunID)))
 		}
 		return printJSON(out)
 	}
@@ -877,7 +880,7 @@ func cmdStatus(st *store.Store, args []string) error {
 	fmt.Fprintln(w, "\tRUN\tTASK\tSTATUS\tSTARTED")
 	for _, r := range runs {
 		mark := " "
-		if !state.IsRead(r.RunID) {
+		if !r.Quiet && !state.IsRead(r.RunID) {
 			mark = "*"
 			unread++
 		}

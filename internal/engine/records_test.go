@@ -137,8 +137,12 @@ func TestARefusedStartRecordLeavesNoPhantomRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(runs) != 1 || runs[0].Status != store.StatusSuccess {
-		t.Fatalf("history = %+v, want only the run that really ran", runs)
+	var got []string
+	for _, r := range runs {
+		got = append(got, r.RunID+":"+string(r.Status))
+	}
+	if !slices.Equal(got, []string{"run-3:success"}) {
+		t.Fatalf("history = %v, want only the run that really ran", got)
 	}
 	if kept, _ := filepath.Glob(filepath.Join(st.Home(), "runs", "*.pending.json")); len(kept) != 0 {
 		t.Fatalf("kept records left behind: %v", kept)

@@ -243,8 +243,12 @@ func TestRepairCompletedOneShots(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RepairCompletedOneShots: %v", err)
 	}
-	if len(removed) != 1 || removed[0].ID != "done" {
-		t.Fatalf("removed = %+v, want only the one-shot whose removal was owed", removed)
+	var gone []string
+	for _, tk := range removed {
+		gone = append(gone, tk.ID)
+	}
+	if strings.Join(gone, ",") != "done" {
+		t.Fatalf("removed = %v, want only the one-shot whose removal was owed", gone)
 	}
 	cfg, _ := s.LoadConfig()
 	var queued []string

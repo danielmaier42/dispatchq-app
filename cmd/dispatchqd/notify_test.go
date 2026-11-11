@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/danielmaier42/claudeq/internal/notify"
@@ -22,8 +23,8 @@ func TestNotifyChannelsAlwaysIncludesTheDesktop(t *testing.T) {
 	if len(channels) != 1 {
 		t.Fatalf("channels = %+v, want just the desktop", channels)
 	}
-	if _, ok := channels[0].(desktopStub); !ok {
-		t.Fatalf("channels[0] = %T, want the desktop channel", channels[0])
+	if _, ok := channels[0].Notifier.(desktopStub); !ok || channels[0].Name != "desktop" || channels[0].Remote {
+		t.Fatalf("channels[0] = %+v, want the local desktop channel", channels[0])
 	}
 }
 
@@ -36,8 +37,8 @@ func TestNotifyChannelsWithoutADesktopKeepsTheRemoteChannels(t *testing.T) {
 	if len(channels) != 1 {
 		t.Fatalf("channels = %+v, want only ntfy", channels)
 	}
-	if _, ok := channels[0].(notify.Ntfy); !ok {
-		t.Fatalf("channels[0] = %T, want notify.Ntfy", channels[0])
+	if _, ok := channels[0].Notifier.(notify.Ntfy); !ok || channels[0].Name != "ntfy" || !channels[0].Remote {
+		t.Fatalf("channels[0] = %+v, want the remote ntfy channel", channels[0])
 	}
 }
 
@@ -67,7 +68,7 @@ func TestNotifyChannelsIncludesEveryConfiguredEnabledChannel(t *testing.T) {
 	}
 	var sawPushover, sawNtfy, sawWebhook bool
 	for _, c := range channels {
-		switch c.(type) {
+		switch c.Notifier.(type) {
 		case notify.Pushover:
 			sawPushover = true
 		case notify.Ntfy:
@@ -94,8 +95,10 @@ func TestNotifyChannelsSkipsDisabledEvenWhenConfigured(t *testing.T) {
 
 // The incident: config.toml could not be read while the system was out of
 // file handles, and every notification went to the desktop alone, so nothing
-// reached the phone. A failed read keeps the settings read last.
-func TestLiveNotifierKeepsTheLastSettingsWhenTheConfigCannotBeRead(t *testing.T) {
+// reached the phone. A failed read keeps the channels of the settings read
+// last, and still reports the failure, so the engine's outbox neither loses
+// the remote channels nor drops their queued deliveries as switched off.
+func TestLiveNotifierKeepsTheLastChannelsWhenTheConfigCannotBeRead(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -105,8 +108,8 @@ func TestLiveNotifierKeepsTheLastSettingsWhenTheConfigCannotBeRead(t *testing.T)
 		t.Fatal(err)
 	}
 	l := &liveNotifier{st: st, desktop: desktopStub{}}
-	if got := notifyChannels(l.desktop, l.settings()); len(got) != 2 {
-		t.Fatalf("channels = %+v, want the desktop and ntfy", got)
+	if got, err := l.Channels(); err != nil || len(got) != 2 {
+		t.Fatalf("channels = %+v, %v; want the desktop and ntfy", got, err)
 	}
 
 	path := filepath.Join(st.Home(), "config.toml")
@@ -116,10 +119,15 @@ func TestLiveNotifierKeepsTheLastSettingsWhenTheConfigCannotBeRead(t *testing.T)
 	if err := os.Mkdir(path, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.LoadConfig(); err == nil {
-		t.Fatal("config still readable; the test does not break it")
+	got, err := l.Channels()
+	if err == nil {
+		t.Fatal("a config that cannot be read was not reported")
 	}
-	if got := notifyChannels(l.desktop, l.settings()); len(got) != 2 {
-		t.Fatalf("channels after a failed read = %+v, want the desktop and ntfy still", got)
+	var names []string
+	for _, c := range got {
+		names = append(names, c.Name)
+	}
+	if !slices.Contains(names, "ntfy") || !slices.Contains(names, "desktop") {
+		t.Fatalf("channels after a failed read = %v, want the desktop and ntfy still", names)
 	}
 }

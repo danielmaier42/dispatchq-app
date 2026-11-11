@@ -7,6 +7,7 @@ const KIND_LABELS: Record<string, string> = {
   artifact: 'New artifact',
   provider: 'Provider',
   task: 'From a task',
+  waiting: 'Task waiting',
 }
 export const kindLabel = (k: string) => KIND_LABELS[k] ?? 'Other'
 

@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -142,6 +143,8 @@ func newTestEngineWithProvider(t *testing.T, r Runner, fc clock.Clock) (*Engine,
 	ad := &healthAdapter{health: provider.Health{State: provider.HealthReady}}
 	checker := &provider.Checker{Registry: provider.NewRegistry(ad), TTL: time.Nanosecond}
 	e := New(st, limit.NewGates(fc), r, fc, checker)
+	// A line per delivered notification is the daemon's log, not the test's.
+	e.deliveryLog = io.Discard
 
 	var runN, sessN int
 	e.newRunID = func() string { runN++; return fmt.Sprintf("run-%d", runN) }

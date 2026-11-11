@@ -1260,6 +1260,13 @@ func (e *Engine) sessionFor(t task.Task, st *store.State, providerID string) (se
 // the instance the run executed on, because a rate limit closes that
 // provider's gate and no other.
 func (e *Engine) finish(t task.Task, providerID string, rec store.Run, res provider.Result, runErr error) {
+	e.end(t, providerID, rec, res, runErr, false)
+}
+
+// end is finish, with cutOff saying DispatchQ cut the run off although the
+// daemon is not stopping: a taken-back run whose outcome cannot be read (see
+// watchAdopted).
+func (e *Engine) end(t task.Task, providerID string, rec store.Run, res provider.Result, runErr error, cutOff bool) {
 	e.mu.Lock()
 	wasCanceled := e.canceled[rec.RunID]
 	takeover := e.takeovers[rec.RunID]
@@ -1283,7 +1290,7 @@ func (e *Engine) finish(t task.Task, providerID string, rec store.Run, res provi
 
 	// A run that failed because the daemon stopped it on its way down (the
 	// shutdown grace ran out) was cut off by DispatchQ, not by its own work.
-	interrupted := runErr == nil && !wasCanceled && e.runCtx.Err() != nil && res.Status == store.StatusFailed
+	interrupted := runErr == nil && !wasCanceled && res.Status == store.StatusFailed && (cutOff || e.runCtx.Err() != nil)
 	e.conclude(t, providerID, rec, res, runErr, outcome{canceled: wasCanceled, takeover: takeover, interrupted: interrupted})
 }
 
@@ -1309,6 +1316,9 @@ type outcome struct {
 func (e *Engine) conclude(t task.Task, providerID string, rec store.Run, res provider.Result, runErr error, how outcome) {
 	wasCanceled, takeover := how.canceled, how.takeover
 	finished := e.clock.Now()
+	if !res.EndedAt.IsZero() && res.EndedAt.Before(finished) {
+		finished = res.EndedAt // read back from a transcript: when it really ended
+	}
 	rec.FinishedAt = &finished
 	rec.PID = 0
 	rec.ExitCode = res.ExitCode

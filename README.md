@@ -456,8 +456,9 @@ explains it.
   leave no trace. It is notified like any other failure, and the daemon log
   names each run (`run … ended while no daemon watched it`).
 - **An interrupted one-shot continues once.** When DispatchQ itself cuts off a
-  one-shot task's run (the 30-second shutdown grace runs out, or the daemon
-  dies under it), the task is not retired half done and not started over:
+  one-shot task's run (the 30-second shutdown grace runs out, the daemon dies
+  under it, or a run taken back after a restart ends without a readable
+  outcome), the task is not retired half done and not started over:
   its next run continues the same session, so the model sees what it already
   did. The run's reason says so. Cut off a second time, the task is retired.
   Recurring tasks start their next occurrence fresh as before, and scripts
@@ -469,7 +470,8 @@ explains it.
   outcome and answer are read from its session transcript (Claude Code);
   where that cannot tell (another harness, a turn that had not ended), it is
   recorded as *failed* with the reason that its exit status and the output
-  written after the restart could not be captured. The daemon log says
+  written after the restart could not be captured, and a one-shot task
+  continues its session once, as above. The daemon log says
   `took back run …`. A run an older version
   already wrote off as interrupted is taken back the same way when its headless
   harness is still running with that session (Claude Code, within seven days).

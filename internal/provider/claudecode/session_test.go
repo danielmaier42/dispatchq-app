@@ -21,6 +21,7 @@ const (
 	tAnswer    = `{"type":"assistant","isSidechain":false,"timestamp":"2026-11-10T09:00:01Z","message":{"id":"msg_2","model":"claude-opus-5-5","stop_reason":"end_turn","content":[{"type":"text","text":"Both locks are relocked."}]}}`
 	tSidechain = `{"type":"assistant","isSidechain":true,"timestamp":"2026-11-10T09:00:02Z","message":{"id":"msg_3","model":"claude-haiku-4-5","stop_reason":"tool_use","content":[{"type":"tool_use","name":"Read"}]}}`
 	tBookkeep  = `{"type":"last-prompt","lastPrompt":"relock storefront","sessionId":"s1"}`
+	tReminder  = `{"type":"user","isSidechain":false,"isMeta":true,"timestamp":"2026-11-10T09:00:03Z","message":{"role":"user","content":[{"type":"text","text":"<system-reminder>a hook ran</system-reminder>"}]}}`
 	tAPIError  = `{"type":"assistant","isSidechain":false,"isApiErrorMessage":true,"timestamp":"2026-11-10T09:00:01Z","message":{"id":"e1","model":"<synthetic>","stop_reason":"stop_sequence","content":[{"type":"text","text":"API Error: 500 Internal server error"}]}}`
 )
 
@@ -49,6 +50,8 @@ func TestSessionOutcome(t *testing.T) {
 	}{
 		{name: "answered", lines: []string{tPrompt, tToolUse, tToolDone, tThinking, tAnswer, tSidechain, tBookkeep},
 			since: started, ok: true, status: store.StatusSuccess, output: "Both locks are relocked."},
+		{name: "answered, then a reminder", lines: []string{tPrompt, tThinking, tAnswer, tReminder},
+			since: started, ok: true, status: store.StatusSuccess, output: "Both locks are relocked."},
 		{name: "cut off after a tool result", lines: []string{tPrompt, tToolUse, tToolDone, tBookkeep}, since: started},
 		{name: "cut off during a tool call", lines: []string{tPrompt, tToolUse}, since: started},
 		{name: "api error", lines: []string{tPrompt, tAPIError}, since: started,
@@ -76,6 +79,9 @@ func TestSessionOutcome(t *testing.T) {
 			}
 			if res.Status != tc.status || res.FinalOutput != tc.output || res.Message != tc.message {
 				t.Fatalf("result = %+v, want %s %q %q", res, tc.status, tc.output, tc.message)
+			}
+			if want := time.Date(2026, 11, 10, 9, 0, 1, 0, time.UTC); !res.EndedAt.Equal(want) {
+				t.Fatalf("ended at %v, want the answer's time %v", res.EndedAt, want)
 			}
 			if res.SessionID != "s1" {
 				t.Fatalf("session = %q", res.SessionID)

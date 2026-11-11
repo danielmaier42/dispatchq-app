@@ -23,6 +23,7 @@ import (
 type transcriptLine struct {
 	Type              string    `json:"type"`
 	IsSidechain       bool      `json:"isSidechain"`
+	IsMeta            bool      `json:"isMeta"`
 	IsAPIErrorMessage bool      `json:"isApiErrorMessage"`
 	Timestamp         time.Time `json:"timestamp"`
 	Message           struct {
@@ -52,7 +53,9 @@ func (a *Adapter) SessionOutcome(inst provider.Instance, sessionID string, since
 	sc.Buffer(make([]byte, 0, 64*1024), 64<<20)
 	for sc.Scan() {
 		var l transcriptLine
-		if json.Unmarshal(sc.Bytes(), &l) != nil || l.IsSidechain {
+		// A meta line (a reminder or hook output the CLI adds) is not part of
+		// the conversation's turns; a sidechain is a subagent's own.
+		if json.Unmarshal(sc.Bytes(), &l) != nil || l.IsSidechain || l.IsMeta {
 			continue
 		}
 		if l.Type != "assistant" && l.Type != "user" {
@@ -95,7 +98,9 @@ func (a *Adapter) SessionOutcome(inst provider.Instance, sessionID string, since
 	default:
 		return provider.Result{}, false, nil // the model was still working (a tool call under way)
 	}
-	return c.Result(0), true, nil
+	res := c.Result(0)
+	res.EndedAt = last.Timestamp
+	return res, true, nil
 }
 
 // textOf returns the text parts of a message's content.

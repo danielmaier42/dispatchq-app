@@ -189,9 +189,24 @@ func (e *Engine) Recover() (adopted []store.Run, interrupted int, err error) {
 		tasks[r.TaskID] = true
 	}
 
-	if len(gone) > 0 {
+	ended := endedRuns(runs, goneRuns, keep)
+	// A gone run's process record is forgotten only once its end is recorded:
+	// for a quiet-history run it is the only trace, and a daemon stopped in
+	// the middle of this must find it again. One whose end history already
+	// holds is forgotten now.
+	settling := map[string]bool{}
+	for _, r := range ended {
+		settling[r.RunID] = true
+	}
+	var forget []string
+	for _, id := range gone {
+		if !settling[id] {
+			forget = append(forget, id)
+		}
+	}
+	if len(forget) > 0 {
 		if err := e.store.UpdateState(func(st *store.State) error {
-			for _, id := range gone {
+			for _, id := range forget {
 				st.ClearLiveRun(id)
 			}
 			return nil
@@ -199,7 +214,6 @@ func (e *Engine) Recover() (adopted []store.Run, interrupted int, err error) {
 			return nil, 0, fmt.Errorf("forget ended runs: %w", err)
 		}
 	}
-	ended := endedRuns(runs, goneRuns, keep)
 	latest := latestStarts(runs, ended)
 	for _, rec := range ended {
 		// Only a task's latest run speaks for its schedule. An older one, or
@@ -208,6 +222,9 @@ func (e *Engine) Recover() (adopted []store.Run, interrupted int, err error) {
 		// under the run that came after it.
 		current := !tasks[rec.TaskID] && !rec.StartedAt.Before(latest[rec.TaskID])
 		e.settleEnded(rec, current)
+		if _, ok := goneRuns[rec.RunID]; ok {
+			e.clearLive(rec.RunID)
+		}
 		interrupted++
 	}
 	for _, f := range take {
@@ -269,10 +286,7 @@ func latestStarts(history, ended []store.Run) map[string]time.Time {
 // current says whether the run is its task's latest, the one whose end the
 // task's schedule follows; for any other only the record is written.
 func (e *Engine) settleEnded(rec store.Run, current bool) {
-	t := task.Task{ID: rec.TaskID, Name: rec.TaskName}
-	if rec.Task != nil {
-		t = *rec.Task
-	}
+	t := e.taskOf(rec)
 	rec.PID = 0
 	how := outcome{keepSchedule: !current}
 	res, ok := e.sessionOutcome(rec)
@@ -292,6 +306,22 @@ func endedText(res provider.Result) string {
 		return string(res.Status) + " (" + res.Message + ")"
 	}
 	return string(res.Status) + " (read from its session)"
+}
+
+// taskOf is the task a run ran: the snapshot it carries, or, for a run
+// recorded before runs carried one, the queued task of that id.
+func (e *Engine) taskOf(rec store.Run) task.Task {
+	if rec.Task != nil {
+		return *rec.Task
+	}
+	if cfg, err := e.store.LoadConfig(); err == nil {
+		for _, t := range cfg.Tasks {
+			if t.ID == rec.TaskID {
+				return t
+			}
+		}
+	}
+	return task.Task{ID: rec.TaskID, Name: rec.TaskName}
 }
 
 // sessionOutcome reads a run's real outcome from its harness's transcript,
@@ -370,10 +400,7 @@ func hasArgPair(fields []string, flag, value string) bool {
 // started: its task does not start again, it holds its concurrency slot, and
 // it can be cancelled or taken over. The caller is Recover, before any tick.
 func (e *Engine) adopt(rec store.Run, pid int, start string) (store.Run, error) {
-	t := task.Task{ID: rec.TaskID, Name: rec.TaskName}
-	if rec.Task != nil {
-		t = *rec.Task
-	}
+	t := e.taskOf(rec)
 	rec.Status = store.StatusRunning
 	rec.FinishedAt = nil
 	rec.Error = ""
@@ -457,11 +484,15 @@ func (e *Engine) watchAdopted(ctx context.Context, t task.Task, providerID strin
 		case <-tick.C:
 		}
 	}
-	res := provider.Result{Status: store.StatusFailed, SessionID: rec.SessionID, Message: adoptedEndMessage}
-	if read, ok := e.sessionOutcome(rec); ok {
-		res = read
+	// Without an outcome to read, the run counts as cut off, as a run that
+	// ended before the restart does (see settleEnded): its one-shot task
+	// continues the session once instead of being retired half done.
+	if res, ok := e.sessionOutcome(rec); ok {
+		e.finish(t, providerID, rec, res, nil)
+		return
 	}
-	e.finish(t, providerID, rec, res, nil)
+	res := provider.Result{Status: store.StatusFailed, SessionID: rec.SessionID, Message: adoptedEndMessage}
+	e.end(t, providerID, rec, res, nil, true)
 }
 
 // letGo gives back a taken-back run's slot without recording an outcome, for a

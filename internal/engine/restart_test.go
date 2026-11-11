@@ -199,14 +199,16 @@ func TestTakenBackRunRecordsTheSessionsRealOutcome(t *testing.T) {
 // finished, is recorded as the success it was and does not run again.
 func TestRecoverRecordsTheRealOutcomeOfARunThatEndedUnwatched(t *testing.T) {
 	e, st, second := diedUnder(t, asapTask("relock", false))
+	ended := time.Date(2026, 11, 9, 9, 40, 0, 0, time.UTC)
 	e.SetSessionReader(func(rec store.Run) (provider.Result, bool) {
-		return provider.Result{Status: store.StatusSuccess, SessionID: rec.SessionID, FinalOutput: "done"}, true
+		return provider.Result{Status: store.StatusSuccess, SessionID: rec.SessionID, FinalOutput: "done", EndedAt: ended}, true
 	})
+	e.clock.(*clock.Fake).Advance(6 * time.Hour) // the restart comes much later
 	if _, _, err := e.Recover(); err != nil {
 		t.Fatal(err)
 	}
-	if run := latestRun(t, st, "run-1"); run.Status != store.StatusSuccess {
-		t.Fatalf("status = %s, want success", run.Status)
+	if run := latestRun(t, st, "run-1"); run.Status != store.StatusSuccess || run.FinishedAt == nil || !run.FinishedAt.Equal(ended) {
+		t.Fatalf("run = %s finished %v, want success at the transcript's end %v", run.Status, run.FinishedAt, ended)
 	}
 	if err := e.Tick(context.Background()); err != nil {
 		t.Fatal(err)

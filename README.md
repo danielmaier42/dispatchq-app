@@ -101,6 +101,7 @@ workflow engine:
 
 - [Features](#features)
 - [How scheduling and the limit gate behave](#how-scheduling-and-the-limit-gate-behave)
+- [When DispatchQ notifies](#when-dispatchq-notifies)
 - [Data on disk](#data-on-disk)
 - [Uninstall](#uninstall)
 - [Build from source](#build-from-source)
@@ -141,9 +142,13 @@ The nightly cycle looks like this:
    marked **rescheduled** in the Log with its resume time, and you can drop that
    resume there so the task does not start again.
 4. On macOS, to run a timed task past a scheduled sleep, it wakes the Mac with
-   `pmset`, and holds the Mac awake (`caffeinate`) while a run is in flight so a
-   task never freezes mid-run. On Windows it holds the PC awake while a run is
-   active but does not wake it from sleep.
+   `pmset`, and keeps the Mac from idle sleep (`caffeinate -i`) while a run is in
+   flight. That does not stop the sleep of a closed lid: a MacBook on battery
+   with its lid shut sleeps anyway, and macOS wakes it only for a minute or so
+   about every quarter of an hour, often without network. An agent task due in
+   such a wake waits for the network instead of failing, and a notification
+   that could not go out is sent once the Mac is online. On Windows it holds
+   the PC awake while a run is active but does not wake it from sleep.
 5. Results — success, failure, rate-limit wait, or auth problem — land in the
    **Log** with the full run output, optionally with a notification.
 
@@ -460,10 +465,12 @@ explains it.
   harness is still running with that session (Claude Code, within seven days).
   The idle timeout does not apply to a run taken back.
 - **Wake and stay awake.** On macOS, `pmset` wakes the Mac at each task's time
-  plus an hourly heartbeat, `caffeinate` holds it through a run, and a run
-  frozen across a long sleep is not mistaken for a hung one. A broken wake setup
-  is shown in the dashboard. On Windows the PC is held awake during a run but
-  not woken from sleep.
+  plus an hourly heartbeat, `caffeinate -i` keeps it from idle sleep through a
+  run, and a run frozen across a long sleep is not mistaken for a hung one.
+  Closing the lid on battery still sleeps the Mac; see
+  [No network, no start](#how-scheduling-and-the-limit-gate-behave) for the
+  short wakes that follow. A broken wake setup is shown in the dashboard. On
+  Windows the PC is held awake during a run but not woken from sleep.
 - **File-access prompts up front.** Task folders are read at login and on
   edit, so macOS asks for Documents access while you are present.
 - **Bounded history.** Old runs are pruned to a configurable count; an unread
@@ -483,13 +490,13 @@ explains it.
 - **Notifications** natively on macOS and, optionally, to
   [Pushover](https://pushover.net), an [ntfy](https://ntfy.sh) topic, or any
   incoming webhook (Slack, Discord, Home Assistant, n8n) with a JSON body you
-  template. Failures always notify, successes only if the task opts in. Every
+  template. Failures always notify, with high priority on the phone, once per
+  failing streak, and again when the task works; successes only if the task
+  opts in. A notification a channel could not take (no network in a short
+  wake) is tried again for a day. Every
   notification also lands in the app's **Notifications** view, and clicking the
   macOS banner marks it read there and opens what it is about — the artifact,
-  the run's log, the link. When `config.toml` cannot be read at the moment a
-  notification goes out (a full disk, a system out of file handles), it is sent
-  with the channels read last time instead of to the desktop alone; the daemon
-  log says so.
+  the run's log, the link. See [When DispatchQ notifies](#when-dispatchq-notifies).
 - **Full history** of every run with its complete log as a chat transcript or
   raw output, and replay.
 - **Continue in Chat…** opens Terminal in the task's folder and resumes the
@@ -726,7 +733,10 @@ first. The window opens on the Dashboard:
 - **Notifications** — every notification DispatchQ sent, newest first, with an
   unread badge. It is the one view with a read state; the Log and Artifacts
   carry no badges, since what matters in them arrives here as well: a run's outcome, a new artifact, a provider that stopped or
-  resumed running tasks, and whatever a task said with `dispatchq notify`. Each
+  resumed running tasks or is paused for hours, a task that has waited long
+  without starting, and whatever a task said with `dispatchq notify`. A task
+  that keeps failing has one row that counts its failures ("failing since
+  08:00 (5 times)") and moves to the top with each. Each
   row shows the notification as it was shown on screen — a glyph for its kind,
   the title, the message — and when it was sent; the list is grouped by day
   and grows with **Show more** like Artifacts; **↑** and **↓** move between rows. A row does what clicking the macOS notification
@@ -1667,7 +1677,9 @@ silent.
   link, and the webhook fills it into `{{url}}` if the template uses it.
 - The CLI hands the notification to the daemon, which sends it on its next tick
   (a few seconds). Exit code 0 means it was queued, not that a channel accepted
-  it — a channel that fails is logged by the daemon (`dispatchqd.err.log`).
+  it. A channel that fails is tried again like any notification (see
+  [When DispatchQ notifies](#when-dispatchq-notifies)) and logged by the daemon
+  (`dispatchqd.err.log`).
 - A notification that waited more than 24 hours — the daemon was not running —
   is dropped with a log line rather than delivered as if it were current.
 - It also works outside a run, from a shell: then it is sent without attribution.
@@ -2193,10 +2205,57 @@ that.
   recurring heartbeat wake, so the Mac can sleep between runs and wake when
   there's work. Windows has no scheduled wake: nothing runs while the PC
   sleeps.
+- **No network, no start.** Before an agent task on Claude Code or Codex
+  starts, the daemon checks that the provider's API host name resolves
+  (`api.anthropic.com`, `api.openai.com`). When it does not, as in the short
+  wakes of a Mac sleeping with its lid closed, the task stays due with the
+  reason *No network connection* and starts on the first check that has it,
+  instead of failing at once. Script jobs and opencode (often pointed at a
+  local model) are not held back. The daemon log says once when the network
+  went and when it is back.
 - **Run outcomes** are one of: `running`, `success`, `failed`,
   `rate_limited_waiting` (shown as *rescheduled* while its session is still
   queued to continue), `auth_error`, `canceled` (stopped by the user — either the
   running process or a scheduled resume).
+
+## When DispatchQ notifies
+
+Notifications go to every channel you switched on (macOS, Pushover, ntfy, the
+webhook) and to the **Notifications** view. What is announced, and how often:
+
+| Event | Announced | Phone priority |
+|-------|-----------|----------------|
+| A run fails, or hits a login problem | The first failure of a streak. Further failures of the same task are not pushed: its row in the Notifications view counts them ("failing since 08:00 (5 times)"). After 12 hours of failing it is pushed once more as a reminder. The message names the run id, which finds the run in the Log. | High (Pushover priority 1, ntfy *high*) |
+| The task works again | Once, with the run that ended the streak ("Failed 5 times since 08:00; this run succeeded."). Replaces the task's own success notification for that run. | Normal |
+| A run succeeds | Only when the task opts in (*Notify on result*). | Normal |
+| A provider is paused by its rate limit | Once per pause, when the pause lasts 2 hours or more, counted from the first limit (back-to-back short pauses add up). Shorter pauses resume by themselves and are not announced. | Normal |
+| A due task has not started | Once per wait, after 30 minutes; a backfill task, whose job is to wait for spare allowance, after 24 hours. Not for waits announced otherwise or that are your own doing: runs paused, a provider out of allowance or not ready, no network. | Normal |
+| A provider stops or resumes running tasks | Once per change (unchanged). | Normal |
+| A run is cancelled, a resume dropped, a run taken over | Not announced: you did it yourself, and the Log records it as `canceled`. | — |
+
+The failure streaks are kept in `failing.json`, so a restart neither announces
+a streak again nor forgets to say it ended. Pause and waiting announcements
+are kept in memory: after a restart a long pause or wait can be announced once
+more.
+
+**Delivery.** Each channel is delivered to on its own. Before a notification
+goes out, a delivery per channel is written to `deliveries.json`; a channel
+that takes it removes its delivery and the daemon log says so, with the
+receipt the service answered with (Pushover's request id, ntfy's message id),
+for example `notification "DispatchQ ✗ nightly failed" accepted by pushover
+(receipt 5042853c-…)`. A channel that does not take it (no network, a timeout,
+a server error, a rate limit) is tried again after 30 seconds, then with
+doubling pauses up to 5 minutes, and at once after the Mac wakes or the
+network is back, also across a daemon restart. Pushover, ntfy and the webhook
+are tried for 24 hours, the macOS banner for 1 hour; past that the daemon
+writes `NOTIFICATION LOST: …` to `dispatchqd.err.log`. A refusal that would
+repeat (a revoked token, a deleted topic: an HTTP 4xx other than 408 or 429)
+is logged and not retried, and a delivery to a channel you switched off is
+dropped. The Notifications view has every notification either way. When
+`config.toml` cannot be read at the moment a notification goes out (a full
+disk, a system out of file handles), it goes to the channels the settings read
+last name, not to the desktop alone, and nothing queued is dropped as switched
+off; the daemon log says so.
 
 ## Data on disk
 
@@ -2214,6 +2273,8 @@ environment variable):
 | `artifacts/<id>/<file>` | The published files themselves (snapshots copied at publish time). |
 | `notifications.json` | Outbox of notifications sent with `dispatchq notify`, waiting for the daemon to deliver them (normally empty). |
 | `inbox.json` | The last 1000 notifications the daemon sent (title, message, kind, what each points at, read flag), as listed in the Notifications view. An unread failure notification is kept until it is read, however old. |
+| `deliveries.json` | Notifications a channel has not taken yet (which channel, how often tried, when next, the last error), retried for up to a day (normally absent). See [When DispatchQ notifies](#when-dispatchq-notifies). |
+| `failing.json` | Tasks failing right now: since when, how often, and the Notifications row that counts it (normally absent). |
 | `state.json` | Machine bookkeeping: read/unread flags (runs and artifacts), which artifacts have been notified about, cron anchors, pending-resume sessions, one-shot tasks whose removal from the queue is still owed, the process of each run in flight (so a restarted daemon can take it back), the provider health you were last told about, the latest credit proof of each API-key account (ping or run, answered or refused), which queue groups are folded shut, dismissed update version, the What's new edition you closed, whether the check for tasks that still use the 1.x names is done. |
 | `dispatchqd.out.log` / `dispatchqd.err.log` | Daemon stdout/stderr on macOS; on Windows the daemon log is `dispatchqd.log`. Every line the daemon prints starts with its local time (RFC 3339, e.g. `2026-11-11T17:05:09+01:00`); a Go crash trace is written as it is. |
 | `../claudeq` | After an update from a 1.x version: a link from the old data folder to this one. |

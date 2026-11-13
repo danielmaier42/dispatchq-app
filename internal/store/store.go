@@ -744,7 +744,6 @@ func (c Config) checkFallbacks() error {
 		if _, ok := next[p.FallbackProvider]; !ok {
 			return fmt.Errorf("fallback %q of provider %q is not configured", p.FallbackProvider, p.ID)
 		}
-
 	}
 	return nil
 }

@@ -234,21 +234,23 @@ function EditForm({provider: p, onDone}: {provider: Provider; onDone: () => void
             </Field>
           )}
         </div>
+      </DialogBody>
+      <DialogFooter className="flex-col items-stretch">
         {error && (
           <Alert tone="danger" title="Not saved">
             {error}
           </Alert>
         )}
-      </DialogBody>
-      <DialogFooter>
-        <DialogClose asChild>
-          <Button type="button" variant="ghost">
-            Cancel
+        <div className="flex justify-end gap-2">
+          <DialogClose asChild>
+            <Button type="button" variant="ghost">
+              Cancel
+            </Button>
+          </DialogClose>
+          <Button type="submit" variant="primary" loading={saving}>
+            Save
           </Button>
-        </DialogClose>
-        <Button type="submit" variant="primary" loading={saving}>
-          Save
-        </Button>
+        </div>
       </DialogFooter>
     </form>
   )

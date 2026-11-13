@@ -360,3 +360,51 @@ func (a *perProviderHealth) CheckHealth(_ context.Context, inst provider.Instanc
 	}
 	return a.healthy
 }
+
+// A valid cycle keeps its queued task while blocked, then starts once on
+// the first reopened account. No live provider is contacted.
+func TestFallbackCycleWaitsAndRecovers(t *testing.T) {
+	fc := clock.NewFake(time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC))
+	r := &stub{}
+	e, st, ad := newTestEngineWithProvider(t, r, fc)
+	ad.set(provider.Health{State: provider.HealthReady})
+	cfg := fallbackConfig("second", asapTask("cyclic", false))
+	cfg.Providers[1].FallbackProvider = store.DefaultProviderID
+	if err := st.SaveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	e.gates.For(store.DefaultProviderID).BlockFor(2 * time.Hour)
+	e.gates.For("second").BlockFor(time.Hour)
+	for range 2 {
+		if err := e.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		e.WaitIdle()
+	}
+	if len(r.requests()) != 0 {
+		t.Fatal("blocked cycle started a run")
+	}
+	stored, err := st.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stored.Tasks) != 1 || !stored.Tasks[0].Enabled {
+		t.Fatal("waiting task was removed or disabled")
+	}
+	fc.Advance(time.Hour)
+	if err := e.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	e.WaitIdle()
+	reqs := r.requests()
+	if len(reqs) != 1 || reqs[0].Provider.ID != "second" {
+		t.Fatalf("requests = %+v", reqs)
+	}
+	if err := e.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	e.WaitIdle()
+	if len(r.requests()) != 1 {
+		t.Fatal("task ran twice")
+	}
+}

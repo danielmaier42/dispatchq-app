@@ -727,10 +727,8 @@ func (c Config) checkProviders() error {
 	return c.checkFallbacks()
 }
 
-// checkFallbacks guards the rate-limit fallback chains: every fallback names
-// another configured instance, and following them always ends. A cycle would
-// be a queue that hands the same work round and round while every account in
-// it is blocked, so the file is not allowed to hold one.
+// checkFallbacks requires each fallback to name another configured provider.
+// Cycles are allowed: the resolver visits each provider at most once per selection.
 func (c Config) checkFallbacks() error {
 	next := make(map[string]string, len(c.Providers))
 	for _, p := range c.Providers {
@@ -745,13 +743,6 @@ func (c Config) checkFallbacks() error {
 		}
 		if _, ok := next[p.FallbackProvider]; !ok {
 			return fmt.Errorf("fallback %q of provider %q is not configured", p.FallbackProvider, p.ID)
-		}
-		seen := map[string]struct{}{p.ID: {}}
-		for id := next[p.ID]; id != ""; id = next[id] {
-			if _, loop := seen[id]; loop {
-				return fmt.Errorf("provider %q has a fallback cycle", p.ID)
-			}
-			seen[id] = struct{}{}
 		}
 	}
 	return nil

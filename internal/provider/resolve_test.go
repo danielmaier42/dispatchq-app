@@ -427,8 +427,8 @@ func TestResolveAvailableWaitsWhenNoHopCanWork(t *testing.T) {
 	}
 }
 
-// TestResolveAvailableSurvivesACycle: config.toml refuses to hold one, but a
-// hand-edited file might, and a scheduler tick must not spin on it.
+// TestResolveAvailableSurvivesACycle: cyclic fallback chains are valid, and a
+// scheduler tick must not spin when every reachable provider is blocked.
 func TestResolveAvailableSurvivesACycle(t *testing.T) {
 	set, err := NewSet("a", []Instance{
 		{ID: "a", Kind: KindClaudeCode, FallbackProvider: "b", Enabled: true},

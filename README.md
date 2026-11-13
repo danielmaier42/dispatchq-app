@@ -1040,9 +1040,13 @@ before.
   task's own model travels only between two accounts of the same harness, and a
   fallback of a different type runs its own default model instead of a name it
   would not understand.
-- A fallback must name another configured provider, and the chain may not close
-  into a circle; removing a provider that is somebody's fallback is refused by
-  name, exactly like removing one a task still uses.
+- A fallback must name another configured provider. Chains may form a circle:
+  each provider is checked at most once per selection. If none can run, the task
+  waits until a provider becomes available; it is not canceled. Removing a provider
+  that is somebody's fallback is refused by name, exactly like removing one a task
+  still uses.
+- If a provider edit cannot be saved, the error stays visible beside the save
+  controls, even in a long, scrolled dialog.
 - The waiting banner names both: *Claude → Second account*, and says the queue
   keeps running rather than that nothing starts. With several providers blocked
   it says which part of the work carries on.

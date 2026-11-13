@@ -21,7 +21,8 @@ import (
 // moved or rewritten in a way it cannot read. Raise it to the coming release
 // whenever a change migrates data one way: 2.0.0 moved the ClaudeQ data
 // directory and LaunchAgent, which 1.x would run beside instead of replacing.
-const DataFloor = "2.0.0"
+// 2.1.4 accepts cyclic fallback configurations, which older releases reject.
+const DataFloor = "2.1.4"
 
 // Release describes a published dispatchq release and its installer asset.
 type Release struct {

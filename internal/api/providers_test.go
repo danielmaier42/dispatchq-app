@@ -576,3 +576,27 @@ func TestAddProviderWithEnvironment(t *testing.T) {
 		t.Fatalf("stored key = %q", got)
 	}
 }
+
+func TestProviderEditCanCloseAFallbackCycle(t *testing.T) {
+	srv, st := newProviderServer(t, provider.Health{State: provider.HealthReady})
+	cfg, err := st.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Providers[0].FallbackProvider = "second"
+	cfg.Providers = append(cfg.Providers, store.Provider{ID: "second", Kind: store.DefaultProviderKind, Enabled: true})
+	if err := st.SaveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	res := do(t, srv, http.MethodPut, "/api/providers/second", map[string]any{"name": "Second", "fallback_provider": "claude"})
+	if res.Status != http.StatusOK {
+		t.Fatalf("save cycle: %d %s", res.Status, res.Body)
+	}
+	cfg, err = st.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Providers[1].FallbackProvider != "claude" {
+		t.Fatal("cycle was not persisted")
+	}
+}

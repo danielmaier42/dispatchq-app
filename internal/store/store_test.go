@@ -686,14 +686,6 @@ func TestSaveConfigRejectsBrokenProviderLists(t *testing.T) {
 			name: "fallback points at itself",
 			cfg:  Config{Providers: []Provider{{ID: "claude", FallbackProvider: "claude"}}},
 		},
-		{
-			name: "fallback cycle",
-			cfg: Config{Providers: []Provider{
-				{ID: "a", FallbackProvider: "b"},
-				{ID: "b", FallbackProvider: "c"},
-				{ID: "c", FallbackProvider: "a"},
-			}},
-		},
 	}
 	s := openTemp(t)
 	for _, tc := range tests {
@@ -880,5 +872,29 @@ func TestBackfillUrgency(t *testing.T) {
 		if err := CheckBackfillUrgency(v); (err == nil) != ok {
 			t.Errorf("CheckBackfillUrgency(%v) = %v, want ok=%v", v, err, ok)
 		}
+	}
+}
+
+func TestSaveConfigKeepsFallbackCycles(t *testing.T) {
+	for _, count := range []int{2, 3} {
+		t.Run(fmt.Sprint(count), func(t *testing.T) {
+			s := openTemp(t)
+			cfg := Config{}
+			for i := 0; i < count; i++ {
+				cfg.Providers = append(cfg.Providers, Provider{ID: fmt.Sprint(i), Kind: DefaultProviderKind, Enabled: true, FallbackProvider: fmt.Sprint((i + 1) % count)})
+			}
+			if err := s.SaveConfig(cfg); err != nil {
+				t.Fatal(err)
+			}
+			got, err := s.LoadConfig()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i, p := range got.Providers {
+				if p.FallbackProvider != cfg.Providers[i].FallbackProvider {
+					t.Fatalf("lost fallback: %+v", got.Providers)
+				}
+			}
+		})
 	}
 }

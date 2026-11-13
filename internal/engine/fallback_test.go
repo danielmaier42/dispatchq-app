@@ -361,7 +361,7 @@ func (a *perProviderHealth) CheckHealth(_ context.Context, inst provider.Instanc
 	return a.healthy
 }
 
-// A valid cycle waits without losing its pending session, then starts once on
+// A valid cycle keeps its queued task while blocked, then starts once on
 // the first reopened account. No live provider is contacted.
 func TestFallbackCycleWaitsAndRecovers(t *testing.T) {
 	fc := clock.NewFake(time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC))
@@ -373,7 +373,7 @@ func TestFallbackCycleWaitsAndRecovers(t *testing.T) {
 	if err := st.SaveConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
-	e.gates.For(store.DefaultProviderID).BlockFor(time.Hour)
+	e.gates.For(store.DefaultProviderID).BlockFor(2 * time.Hour)
 	e.gates.For("second").BlockFor(time.Hour)
 	for range 2 {
 		if err := e.Tick(context.Background()); err != nil {
@@ -391,7 +391,7 @@ func TestFallbackCycleWaitsAndRecovers(t *testing.T) {
 	if len(stored.Tasks) != 1 || !stored.Tasks[0].Enabled {
 		t.Fatal("waiting task was removed or disabled")
 	}
-	e.gates.For("second").Lift()
+	fc.Advance(time.Hour)
 	if err := e.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}

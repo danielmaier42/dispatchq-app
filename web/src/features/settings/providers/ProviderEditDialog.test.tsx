@@ -4,16 +4,31 @@ import type {Provider} from '@/lib/types'
 import {ProviderEditDialog} from './ProviderEditDialog'
 import {saveProvider} from './actions'
 
+vi.mock('@/components/ui/toaster', () => ({toast: {success: vi.fn()}}))
 vi.mock('./actions', () => ({saveProvider: vi.fn()}))
 vi.mock('@/lib/queries', () => ({useProviders: () => ({data: []}), useModels: () => ({data: []})}))
 
 const provider: Provider = {
-  id: 'claude', kind: 'claude-code', name: 'Claude', binary_path: '', config_dir: '',
-  default_model: '', fallback_provider: '', fallback_model: '', enabled: true,
-  health: {state: 'ready', checked_at: ''}, default: true, reasoning_effort: true,
-  asides: true, type_name: 'Claude', env: [],
+  id: 'claude',
+  kind: 'claude-code',
+  name: 'Claude',
+  binary_path: '',
+  config_dir: '',
+  default_model: '',
+  fallback_provider: '',
+  fallback_model: '',
+  enabled: true,
+  health: {state: 'ready', checked_at: ''},
+  default: true,
+  reasoning_effort: true,
+  asides: true,
+  type_name: 'Claude',
+  env: [],
 }
-afterEach(() => { cleanup(); vi.resetAllMocks() })
+afterEach(() => {
+  cleanup()
+  vi.resetAllMocks()
+})
 
 it('keeps a rejected save visible in the fixed footer, outside the scrolling fields', async () => {
   vi.mocked(saveProvider).mockRejectedValue(new Error('Provider settings could not be saved'))
@@ -27,7 +42,8 @@ it('keeps a rejected save visible in the fixed footer, outside the scrolling fie
   await waitFor(() => expect(screen.getByText('Provider settings could not be saved')).toBeTruthy())
   const error = screen.getByText('Provider settings could not be saved')
   expect(body.contains(error)).toBe(false)
-  expect(save.closest('.shrink-0')!.contains(error)).toBe(true)
+  expect(form.lastElementChild!.classList.contains('shrink-0')).toBe(true)
+  expect(form.lastElementChild!.contains(error)).toBe(true)
   expect(done).not.toHaveBeenCalled()
   expect(save.hasAttribute('disabled')).toBe(false)
 })

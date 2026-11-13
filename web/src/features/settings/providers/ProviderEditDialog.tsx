@@ -242,14 +242,14 @@ function EditForm({provider: p, onDone}: {provider: Provider; onDone: () => void
           </Alert>
         )}
         <div className="flex justify-end gap-2">
-        <DialogClose asChild>
-          <Button type="button" variant="ghost">
-            Cancel
+          <DialogClose asChild>
+            <Button type="button" variant="ghost">
+              Cancel
+            </Button>
+          </DialogClose>
+          <Button type="submit" variant="primary" loading={saving}>
+            Save
           </Button>
-        </DialogClose>
-        <Button type="submit" variant="primary" loading={saving}>
-          Save
-        </Button>
         </div>
       </DialogFooter>
     </form>

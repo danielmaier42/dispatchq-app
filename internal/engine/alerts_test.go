@@ -222,32 +222,57 @@ func TestCancellationIsNotAnnounced(t *testing.T) {
 	}
 }
 
-// A due task that sits in the queue for long used to show up only in the log.
-func TestLongWaitIsAnnouncedOncePerWait(t *testing.T) {
-	fc := clock.NewFake(time.Date(2026, 10, 5, 15, 40, 0, 0, time.UTC))
-	r := &stub{block: make(chan struct{})}
-	e, st := newTestEngine(t, r, fc)
-	e.holdLog = &bytes.Buffer{}
-	n := &capturingNotifier{}
-	e.SetNotifier(n)
-	saveTasks(t, st, asapTask("first", false), asapTask("second", true))
-
-	tick(t, e)
-	waitFor(t, func() bool { r.mu.Lock(); defer r.mu.Unlock(); return r.active == 1 })
-	fc.Advance(HoldNotifyAfter - time.Minute)
-	tick(t, e)
-	fc.Advance(time.Minute)
-	tick(t, e)
-	fc.Advance(time.Hour)
-	tick(t, e)
-	waitFor(t, func() bool { return len(n.all()) > 0 })
-	close(r.block)
-	e.WaitIdle()
-
-	msgs := n.all()
-	if len(msgs) != 1 || msgs[0].Kind != store.InboxKindWaiting || msgs[0].Title != "DispatchQ: second is waiting" ||
-		!strings.Contains(msgs[0].Message, "Waiting for 30m0s") {
-		t.Fatalf("pushes = %+v, want one waiting notice", msgs)
+// Waiting remains visible in the queue and daemon log without interrupting the operator.
+func TestLongWaitRemainsVisibleWithoutNotifications(t *testing.T) {
+	for _, backfill := range []bool{false, true} {
+		name := "regular"
+		if backfill {
+			name = "backfill"
+		}
+		t.Run(name, func(t *testing.T) {
+			fc := clock.NewFake(time.Date(2026, 10, 5, 15, 40, 0, 0, time.UTC))
+			r := &stub{block: make(chan struct{})}
+			e, st := newTestEngine(t, r, fc)
+			var log bytes.Buffer
+			e.holdLog = &log
+			n := &capturingNotifier{}
+			e.SetNotifier(n)
+			second := asapTask("second", true)
+			second.Backfill = backfill
+			saveTasks(t, st, asapTask("first", false), second)
+			tick(t, e)
+			waitFor(t, func() bool { r.mu.Lock(); defer r.mu.Unlock(); return r.active == 1 })
+			// Release the blocking fixture even if an assertion fails.
+			released := false
+			defer func() {
+				if !released {
+					close(r.block)
+				}
+				e.WaitIdle()
+			}()
+			since := fc.Now()
+			for _, elapsed := range []time.Duration{30 * time.Minute, 24 * time.Hour, 48 * time.Hour} {
+				fc.Advance(elapsed)
+				tick(t, e)
+			}
+			h, ok := e.Holds()["second"]
+			if !ok || h.Reason == "" || !h.Since.Equal(since) {
+				t.Fatalf("queue lost the waiting task: %+v, present %v", h, ok)
+			}
+			if !strings.Contains(log.String(), `task "second" has been due for`) {
+				t.Fatalf("missing diagnostic wait log: %q", log.String())
+			}
+			// Wait for any asynchronous notification goroutines before asserting.
+			close(r.block)
+			e.WaitIdle()
+			released = true
+			if msgs := n.all(); len(msgs) != 0 {
+				t.Fatalf("waiting pushed notifications: %+v", msgs)
+			}
+			if entries := inbox(t, st); len(entries) != 0 {
+				t.Fatalf("waiting added inbox entries: %+v", entries)
+			}
+		})
 	}
 }
 
@@ -273,19 +298,6 @@ func TestExpectedWaitsAreNotAnnounced(t *testing.T) {
 	e.WaitIdle()
 	if msgs := n.all(); len(msgs) != 0 {
 		t.Fatalf("expected waits pushed %+v", msgs)
-	}
-}
-
-func TestBackfillWaitIsAnnouncedOnlyAfterADay(t *testing.T) {
-	limits := holdLimits(store.Config{Tasks: []task.Task{{ID: "b", Backfill: true}, {ID: "n"}}}, map[string]bool{"x": true})
-	if got := limits("b"); got != BackfillHoldNotifyAfter {
-		t.Errorf("backfill limit = %s", got)
-	}
-	if got := limits("n"); got != HoldNotifyAfter {
-		t.Errorf("normal limit = %s", got)
-	}
-	if got := limits("x"); got != 0 {
-		t.Errorf("explained limit = %s, want never", got)
 	}
 }
 
@@ -388,25 +400,6 @@ func TestRunStartedBeforeThePauseDoesNotEndIt(t *testing.T) {
 	}
 	if pauses != 1 {
 		t.Fatalf("pause announcements = %d, want 1", pauses)
-	}
-}
-
-// Time held for a reason that is not announced does not count towards the
-// waiting notice once the reason changes.
-func TestExplainedWaitDoesNotCountTowardsTheNotice(t *testing.T) {
-	now := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
-	var h holds
-	log := &bytes.Buffer{}
-	explained := func(string) time.Duration { return 0 }
-	unexplained := func(string) time.Duration { return HoldNotifyAfter }
-	h.update(map[string]string{"a": "No network connection"}, now, log, explained)
-	now = now.Add(3 * time.Hour)
-	if long := h.update(map[string]string{"a": "runs alone"}, now, log, unexplained); len(long) != 0 {
-		t.Fatalf("announced at once after an explained wait: %+v", long)
-	}
-	now = now.Add(HoldNotifyAfter)
-	if long := h.update(map[string]string{"a": "runs alone"}, now, log, unexplained); len(long) != 1 || long[0].waited != HoldNotifyAfter {
-		t.Fatalf("long = %+v, want one notice counting 30 minutes", long)
 	}
 }
 

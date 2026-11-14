@@ -341,11 +341,7 @@ func (e *Engine) Tick(ctx context.Context) error {
 	// held collects why each due task does not start this tick; whatever is
 	// left in it at the end is what the queue shows.
 	held := map[string]string{}
-	// explained collects the tasks held for a reason that is announced on its
-	// own (a provider pause, a provider that cannot run) or needs no telling
-	// (no network): their wait is not notified as well.
-	explained := map[string]bool{}
-	assigned := e.assign(ctx, providers, due, cfg.Settings.BackfillUrgencyOrDefault(), held, explained)
+	assigned := e.assign(ctx, providers, due, cfg.Settings.BackfillUrgencyOrDefault(), held)
 
 	// Their harnesses are then probed *outside* the lock. A readiness check
 	// spawns a CLI and a CLI can hang; holding e.mu across that would stall the
@@ -396,11 +392,9 @@ func (e *Engine) Tick(ctx context.Context) error {
 			continue
 		case !a.task.IsScript() && !health.ready(a.resolved):
 			held[a.task.ID] = health.reason(a.resolved)
-			explained[a.task.ID] = true
 			continue
 		case !a.task.IsScript() && !online.reachable(a.resolved):
 			held[a.task.ID] = "No network connection; it starts once " + a.resolved.Instance.Label() + " can be reached again."
-			explained[a.task.ID] = true
 			continue
 		}
 		runnable = append(runnable, a.task)
@@ -417,8 +411,7 @@ func (e *Engine) Tick(ctx context.Context) error {
 	overdue := schedule.Overdue(runnable, since, now)
 	selected := schedule.Select(runnable, e.runningState(), overdue)
 	maps.Copy(held, schedule.Held(runnable, e.runningState(), overdue))
-	long := e.holds.update(held, now, e.holdLog, holdLimits(cfg, explained))
-	e.announceHolds(long, taskNames(cfg))
+	e.holds.update(held, now, e.holdLog)
 	starts := make([]start, 0, len(selected))
 	for _, t := range selected {
 		starts = append(starts, start{task: t, resolved: ready[t.ID], deps: deps[t.ID]})
@@ -463,7 +456,7 @@ func (e *Engine) holdAll(cfg store.Config, reason string) {
 	for _, t := range due {
 		held[t.ID] = reason
 	}
-	e.holds.update(held, e.clock.Now(), e.holdLog, nil)
+	e.holds.update(held, e.clock.Now(), e.holdLog)
 }
 
 // allDue is dueTasks with the dependencies worked out first.
@@ -528,7 +521,7 @@ type assignment struct {
 // (see provider.Selection.Backfill); while there is none it is dropped too.
 //
 // Why a dropped task does not start is filed in held, by task id.
-func (e *Engine) assign(ctx context.Context, set provider.Set, due []task.Task, backfill float64, held map[string]string, explained map[string]bool) []assignment {
+func (e *Engine) assign(ctx context.Context, set provider.Set, due []task.Task, backfill float64, held map[string]string) []assignment {
 	out := make([]assignment, 0, len(due))
 	// Which pool member holds a task's interrupted session is read once per
 	// pass. Without it a pool would pick by rank and drop the session.
@@ -571,7 +564,6 @@ func (e *Engine) assign(ctx context.Context, set provider.Set, due []task.Task, 
 		if err == nil && !e.gateOpen(res.Instance.ID) {
 			held[t.ID] = fmt.Sprintf("%s is out of allowance until %s.",
 				res.Instance.Label(), reopenText(e.gates.For(res.Instance.ID).BlockedUntil(), e.clock.Now()))
-			explained[t.ID] = true
 			continue
 		}
 		if err == nil {

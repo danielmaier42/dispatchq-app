@@ -776,8 +776,8 @@ first. The window opens on the Dashboard:
 - **Notifications** — every notification DispatchQ sent, newest first, with an
   unread badge. It is the one view with a read state; the Log and Artifacts
   carry no badges, since what matters in them arrives here as well: a run's outcome, a new artifact, a provider that stopped or
-  resumed running tasks or is paused for hours, a task that has waited long
-  without starting, and whatever a task said with `dispatchq notify`. A task
+  resumed running tasks or is paused for hours, and whatever a task said with
+  `dispatchq notify`. A task
   that keeps failing has one row that counts its failures ("failing since
   08:00 (5 times)") and moves to the top with each. Each
   row shows the notification as it was shown on screen — a glyph for its kind,
@@ -2342,14 +2342,13 @@ webhook) and to the **Notifications** view. What is announced, and how often:
 | The task works again | Once, with the run that ended the streak ("Failed 5 times since 08:00; this run succeeded."). Replaces the task's own success notification for that run. | Normal |
 | A run succeeds | Only when the task opts in (*Notify on result*). | Normal |
 | A provider is paused by its rate limit | Once per pause, when the pause lasts 2 hours or more, counted from the first limit (back-to-back short pauses add up). Shorter pauses resume by themselves and are not announced. | Normal |
-| A due task has not started | Once per wait, after 30 minutes; a backfill task, whose job is to wait for spare allowance, after 24 hours. Not for waits announced otherwise or that are your own doing: runs paused, a provider out of allowance or not ready, no network. | Normal |
+| A due task has not started | Not announced. The Queue shows the wait duration and current reason; long waits are recorded in the daemon log. | — |
 | A provider stops or resumes running tasks | Once per change (unchanged). | Normal |
 | A run is cancelled, a resume dropped, a run taken over | Not announced: you did it yourself, and the Log records it as `canceled`. | — |
 
 The failure streaks are kept in `failing.json`, so a restart neither announces
-a streak again nor forgets to say it ended. Pause and waiting announcements
-are kept in memory: after a restart a long pause or wait can be announced once
-more.
+a streak again nor forgets to say it ended. Pause announcements are kept in
+memory: after a restart a long pause can be announced once more.
 
 **Delivery.** Each channel is delivered to on its own. Before a notification
 goes out, a delivery per channel is written to `deliveries.json`; a channel

@@ -14,7 +14,7 @@ import (
 
 // When the daemon speaks up about something that is not a single run's
 // outcome. Each is announced once per episode: a task that keeps failing,
-// a provider that stays paused, a task that keeps waiting.
+// a provider that stays paused.
 const (
 	// FailureReminderAfter is how long a task may keep failing before the
 	// streak is pushed again. In between, every further failure only updates
@@ -27,13 +27,6 @@ const (
 	// pauseChainGap is how soon after a pause ended a new one still counts as
 	// the same: a resumed session that hits the limit again at once.
 	pauseChainGap = 30 * time.Minute
-	// HoldNotifyAfter is how long a due task may wait without starting before
-	// the operator is told, for a reason nothing else announces (it runs alone
-	// and the parallel work keeps going, its pool has no member, ...).
-	HoldNotifyAfter = 30 * time.Minute
-	// BackfillHoldNotifyAfter is the same for a backfill task, whose job is
-	// to wait for spare allowance: only a wait of a whole day is unusual.
-	BackfillHoldNotifyAfter = 24 * time.Hour
 )
 
 // alerts is the memory of the episodes that are not kept on disk.
@@ -282,59 +275,4 @@ func (e *Engine) endPause(providerID string, started time.Time) {
 	if ep, ok := e.alerts.pauses[providerID]; ok && !started.Before(ep.since) {
 		delete(e.alerts.pauses, providerID)
 	}
-}
-
-// holdLimits says how long each task may wait before its wait is announced:
-// never while held for a reason that is announced elsewhere or is the
-// operator's own doing (explained), a day for backfill work, half an hour
-// for anything else.
-func holdLimits(cfg store.Config, explained map[string]bool) func(id string) time.Duration {
-	backfill := map[string]bool{}
-	for _, t := range cfg.Tasks {
-		backfill[t.ID] = t.Backfill
-	}
-	return func(id string) time.Duration {
-		switch {
-		case explained[id]:
-			return 0
-		case backfill[id]:
-			return BackfillHoldNotifyAfter
-		default:
-			return HoldNotifyAfter
-		}
-	}
-}
-
-// taskNames maps task ids to their names, for the hold announcements.
-func taskNames(cfg store.Config) map[string]string {
-	names := make(map[string]string, len(cfg.Tasks))
-	for _, t := range cfg.Tasks {
-		names[t.ID] = t.Name
-	}
-	return names
-}
-
-// announceHolds tells the operator about each task that waited too long, off
-// the scheduler's lock.
-func (e *Engine) announceHolds(long []longHold, names map[string]string) {
-	if e.notifier == nil || len(long) == 0 {
-		return
-	}
-	e.wg.Add(1)
-	go func() {
-		defer e.wg.Done()
-		for _, h := range long {
-			name := names[h.taskID]
-			if name == "" {
-				name = h.taskID
-			}
-			e.send(notify.Notification{
-				Kind:     store.InboxKindWaiting,
-				Title:    "DispatchQ: " + name + " is waiting",
-				Message:  fmt.Sprintf("Waiting for %s: %s", h.waited.Round(time.Minute), h.reason),
-				TaskID:   h.taskID,
-				TaskName: name,
-			})
-		}
-	}()
 }

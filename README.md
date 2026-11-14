@@ -776,8 +776,8 @@ first. The window opens on the Dashboard:
 - **Notifications** — every notification DispatchQ sent, newest first, with an
   unread badge. It is the one view with a read state; the Log and Artifacts
   carry no badges, since what matters in them arrives here as well: a run's outcome, a new artifact, a provider that stopped or
-  resumed running tasks or is paused for hours, a task that has waited long
-  without starting, and whatever a task said with `dispatchq notify`. A task
+  resumed running tasks or is paused for hours, and whatever a task said with
+  `dispatchq notify`. A task
   that keeps failing has one row that counts its failures ("failing since
   08:00 (5 times)") and moves to the top with each. Each
   row shows the notification as it was shown on screen — a glyph for its kind,

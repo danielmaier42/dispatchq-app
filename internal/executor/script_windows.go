@@ -11,8 +11,7 @@ import (
 // supported Windows version, so a script job needs no extra install.
 const defaultShell = "powershell.exe"
 
-// scriptFileName carries the .ps1 extension PowerShell requires for -File.
-const scriptFileName = "job.ps1"
+const scriptFileName = powerShellJobFile
 
 // scriptCommand runs a script job as PowerShell. Windows has no shebang
 // execution, so a script that names an interpreter that way is refused with an
@@ -25,7 +24,8 @@ func scriptCommand(path, src string) (name string, args []string, err error) {
 		return "", nil, errors.New("script jobs on Windows run as PowerShell; a shebang line is not supported, " +
 			"remove it or call the interpreter explicitly from the script")
 	}
-	return defaultShell, []string{"-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", path}, nil
+	args, err = powerShellScriptArgs(path)
+	return defaultShell, args, err
 }
 
 // scriptFileBytes is what the script file holds: the job's source with a UTF-8

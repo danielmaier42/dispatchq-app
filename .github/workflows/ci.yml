@@ -52,6 +52,17 @@ jobs:
         with:
           version: v2.12.2
 
+  windows-script-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          check-latest: true
+      - name: Check script exit codes under Windows PowerShell
+        run: go test ./internal/executor -run '^TestPowerShellScriptExitCode$' -v
+
   web:
     runs-on: ubuntu-latest
     defaults:
